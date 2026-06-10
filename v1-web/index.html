@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sussurro · Fale. Ele escreve por você.</title>
+  <meta name="description" content="Grave sua voz e transforme em texto em qualquer idioma. Transcrição inteligente que roda no seu computador — privada de verdade.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ══════════ NAV ══════════ -->
+<nav class="nav">
+  <div class="nav-brand">🎙️ <span>Sussurro</span></div>
+  <div class="nav-links">
+    <a href="#como">Como funciona</a>
+    <a href="#idiomas">Idiomas</a>
+    <a href="#privacidade">Privacidade</a>
+    <button class="btn btn-ghost btn-sm" id="nav-try">Experimentar</button>
+  </div>
+</nav>
+
+<!-- ══════════ HERO ══════════ -->
+<header class="hero">
+  <div class="hero-badge">✨ Grátis · roda no seu navegador</div>
+  <h1 class="hero-title">Fale. Ele <span class="hl">escreve</span> por você.</h1>
+  <p class="hero-sub">
+    Aperte gravar, fale o que vier à cabeça e veja virar texto na hora —
+    em <b>qualquer idioma</b>. Ideias, recados, rascunhos de artigo, lembretes.
+    Sem digitar uma letra.
+  </p>
+  <div class="hero-cta">
+    <button class="btn btn-primary btn-lg" id="hero-try">🎙️ Experimentar agora</button>
+    <a class="btn btn-ghost btn-lg" href="#como">Ver como funciona</a>
+  </div>
+  <div class="hero-note">Funciona melhor no Chrome ou Edge · não instala nada</div>
+</header>
+
+<!-- ══════════ DEMO (gravador) ══════════ -->
+<section id="demo" class="demo">
+  <div class="rec-card">
+    <div class="rec-head">
+      <div class="rec-controls">
+        <label class="rec-field">
+          <span>Idioma</span>
+          <select id="lang">
+            <option value="pt-BR">🇧🇷 Português</option>
+            <option value="en-US">🇺🇸 English</option>
+            <option value="es-ES">🇪🇸 Español</option>
+            <option value="de-DE">🇩🇪 Deutsch</option>
+          </select>
+        </label>
+        <div class="rec-status" id="rec-status">Pronto pra ouvir você</div>
+      </div>
+      <div class="rec-timer" id="rec-timer">00:00</div>
+    </div>
+
+    <div class="rec-stage">
+      <button class="mic-btn" id="mic-btn" title="Gravar">
+        <span class="mic-emoji">🎙️</span>
+        <span class="mic-pulse"></span>
+      </button>
+      <div class="mic-label" id="mic-label">Toque para falar</div>
+    </div>
+
+    <div class="transcript-wrap">
+      <div class="transcript" id="transcript" contenteditable="true"
+           data-placeholder="Sua fala vai aparecer aqui… (você também pode editar o texto)"></div>
+      <span class="interim" id="interim"></span>
+    </div>
+
+    <div class="rec-actions">
+      <span class="word-count" id="word-count">0 palavras</span>
+      <div class="rec-actions-btns">
+        <button class="btn btn-ghost btn-sm" id="btn-clear">Limpar</button>
+        <button class="btn btn-ghost btn-sm" id="btn-copy">📋 Copiar</button>
+        <button class="btn btn-primary btn-sm" id="btn-download">↓ Baixar .txt</button>
+      </div>
+    </div>
+
+    <div class="rec-fallback" id="rec-fallback" hidden>
+      <b>Seu navegador não suporta transcrição ao vivo.</b>
+      A versão completa do Sussurro usa o Whisper localmente e funciona em qualquer máquina —
+      esta demo precisa do Chrome ou Edge. Você ainda pode digitar/editar no campo acima.
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ COMO FUNCIONA ══════════ -->
+<section id="como" class="band">
+  <h2 class="band-title">Três passos. Sério, só três.</h2>
+  <div class="steps">
+    <div class="step"><div class="step-n">1</div><h3>Aperte gravar</h3><p>Toque no microfone e fale naturalmente. Pode pensar alto, sem pressa.</p></div>
+    <div class="step"><div class="step-n">2</div><h3>Vê virar texto</h3><p>A transcrição aparece enquanto você fala, no idioma que escolher.</p></div>
+    <div class="step"><div class="step-n">3</div><h3>Leve pra onde quiser</h3><p>Copie, baixe ou — na versão completa — salve direto no seu Obsidian.</p></div>
+  </div>
+</section>
+
+<!-- ══════════ MODOS ══════════ -->
+<section class="band band-soft">
+  <h2 class="band-title">Dois jeitos de usar</h2>
+  <div class="modes">
+    <div class="mode-card">
+      <div class="mode-icon">📝</div>
+      <h3>Transcrição</h3>
+      <p>Texto limpo do que você falou. Perfeito pra rascunhos, recados, anotações e legendas.</p>
+    </div>
+    <div class="mode-card">
+      <div class="mode-icon">🧠</div>
+      <h3>Brainstorm → inbox</h3>
+      <p>Despeje a ideia falando. O Sussurro joga no seu fluxo de notas pra organizar e desenvolver depois.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ IDIOMAS ══════════ -->
+<section id="idiomas" class="band">
+  <h2 class="band-title">Fala como você quiser</h2>
+  <p class="band-sub">Transcreve em vários idiomas — ou detecta sozinho qual você está falando.</p>
+  <div class="langs">
+    <div class="lang-chip">🇧🇷 Português</div>
+    <div class="lang-chip">🇺🇸 English</div>
+    <div class="lang-chip">🇪🇸 Español</div>
+    <div class="lang-chip">🇩🇪 Deutsch</div>
+    <div class="lang-chip lang-auto">🔍 Auto-detectar</div>
+  </div>
+</section>
+
+<!-- ══════════ PRIVACIDADE ══════════ -->
+<section id="privacidade" class="band band-soft">
+  <div class="priv">
+    <div class="priv-icon">🔒</div>
+    <div>
+      <h2 class="band-title left">Sua voz não vai pra lugar nenhum</h2>
+      <p class="priv-text">
+        A versão completa do Sussurro transcreve com o <b>Whisper rodando na sua própria máquina</b> —
+        o áudio nunca sai do seu computador. Nesta demo do navegador, nada é gravado nem enviado:
+        fechou a aba, acabou.
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div>🎙️ Sussurro · feito com carinho</div>
+  <div class="foot-sub">Gravador e transcritor inteligente. v1</div>
+</footer>
+
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

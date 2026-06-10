@@ -1,0 +1,7 @@
+{
+  "modelo_whisper": "small",
+  "idioma_padrao": "pt",
+  "pasta_obsidian": "/caminho/para/seu/vault/inbox",
+  "usar_ia_para_lapidacao": true,
+  "nota": "Copie para config.json e ajuste os caminhos. As chaves de IA ficam no .env (GEMINI_API_KEY etc.), nunca aqui."
+}

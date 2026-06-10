@@ -1,0 +1,7 @@
+# Sussurro — dependências
+sounddevice        # captura do microfone
+soundcard          # captura do áudio do PC (loopback WASAPI)
+numpy
+faster-whisper     # transcrição offline
+python-dotenv      # carrega o .env (chaves de IA)
+# ai_provider.py é local (09_AUTOMATIONS) e traz os SDKs de IA conforme o provedor
