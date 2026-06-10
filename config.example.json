@@ -1,7 +1,14 @@
 {
   "modelo_whisper": "small",
   "idioma_padrao": "pt",
-  "pasta_obsidian": "/caminho/para/seu/vault/inbox",
   "usar_ia_para_lapidacao": true,
-  "nota": "Copie para config.json e ajuste os caminhos. As chaves de IA ficam no .env (GEMINI_API_KEY etc.), nunca aqui."
+  "tema": "escuro",
+  "vaults": {
+    "pessoal": "/caminho/para/seu/vault/Inbox",
+    "acoes": "/caminho/para/seu/vault/Inbox",
+    "privado": "/caminho/para/seu/vault/Privado/diario-voz",
+    "jogo": "/caminho/para/seu/vault/Privado/jogo-sessoes",
+    "video": "/caminho/para/pasta/audio-bruto"
+  },
+  "nota": "Copie para config.json e ajuste os caminhos. 'tema': escuro|claro. As chaves de IA ficam no .env (GEMINI_API_KEY etc.), nunca aqui."
 }

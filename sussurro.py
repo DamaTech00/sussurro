@@ -35,8 +35,24 @@ import ai_provider
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 WAV_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcricoes")
 ICONS_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "icons")
-# inbox do vault (../../inbox a partir de 09_AUTOMATIONS/whisper-ui)
-INBOX_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "inbox")
+
+# ── Destinos (vaults). Caminhos reais; o config.json sobrescreve via cfg["vaults"]. ──
+# Arquitetura de dois cofres: cérebro (pessoal kepano) × maquinário (Maestro).
+HOME = os.path.expanduser("~")
+VAULT_DEFAULTS = {
+    # Pessoal (kepano): captura cai no Inbox p/ o Claude organizar no tipo certo.
+    "pessoal": os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Inbox"),
+    # Ações (ops): também cai no Inbox do Pessoal — o Claude dispara a ação e deixa o recibo.
+    "acoes":   os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Inbox"),
+    # Privado: diário/desabafo, nunca entra no inbox nem vira conteúdo.
+    "privado": os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Privado", "diario-voz"),
+    # Jogo MedCof: rodadas guardadas à parte.
+    "jogo":    os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Privado", "jogo-sessoes"),
+    # Vídeo (cru): áudio das gravações do canal pro pipeline de edição.
+    "video":   os.path.join(HOME, "FernandaOS", "Cofres", "The_Deep_Sync", "audio-bruto"),
+}
+# Compat: alguns trechos antigos ainda referenciam INBOX_DIR.
+INBOX_DIR = VAULT_DEFAULTS["pessoal"]
 
 SAMPLE_RATE = 16000
 CHANNELS    = 1
@@ -49,70 +65,110 @@ IDIOMAS = {
     "🔍 Auto-detectar": None,
 }
 
-# Modos de uso do Sussurro: padrão "áudio → transformação → destino/ação".
-# 'intencao' vai no frontmatter; 'instrucao' é o que o Claude deve FAZER com a nota
-# ao processar o inbox; 'inbox' força o envio pro Claude executar a ação.
+# Vaults / destinos (a "onde"). O 1º seletor da barra escolhe um destes.
+VAULTS = [
+    {"id": "pessoal", "label": "🧠 Pessoal",
+     "desc": "Conhecimento (kepano) — cai no Inbox e o Claude organiza no tipo certo."},
+    {"id": "acoes",   "label": "⚙️ Ações",
+     "desc": "Ops (reunião/agenda/finança/email) — o Claude dispara a ação e deixa o recibo."},
+    {"id": "privado", "label": "🔒 Privado",
+     "desc": "Diário/desabafo — transcrição limpa, fora do inbox, nunca vira conteúdo."},
+    {"id": "video",   "label": "🎬 Vídeo (cru)",
+     "desc": "Áudio das gravações do canal — transcrição CRUA + WAV pro pipeline de edição."},
+]
+VAULT_LABELS    = [v["label"] for v in VAULTS]
+VAULT_POR_LABEL = {v["label"]: v for v in VAULTS}
+
+# Modos (a "o quê"): padrão "áudio → transformação → ação". Agrupados por vault.
+# 'intencao' vai no frontmatter; 'instrucao' é o que o Claude FAZ ao processar o inbox.
 MODOS = [
-    {"label": "📝 Nota / Transcrição", "intencao": "nota", "inbox": False,
-     "desc": "Transcrição corrigida pelo contexto, conectada ao vault.", "instrucao": ""},
-    {"label": "🤝 Reunião → ata + tarefas", "intencao": "reuniao", "inbox": True,
-     "desc": "Vira ata + tarefas + eventos no Calendar (grave com 🔊 áudio do PC ligado).",
-     "instrucao": "Gerar uma ATA (decisões e pontos-chave), extrair TAREFAS com prazos, "
-                  "criar os compromissos no Google Calendar (calendário correspondente) e "
-                  "registrar as pendências."},
-    {"label": "📅 Agenda → Google Calendar", "intencao": "agenda", "inbox": True,
-     "desc": "Fala os compromissos e o Claude cria os eventos no calendário certo.",
-     "instrucao": "Extrair cada compromisso (título, data, hora) e criar no Google "
-                  "Calendar, no calendário correspondente."},
-    {"label": "📚 Estudo → flashcards (MedCof)", "intencao": "estudo", "inbox": True,
-     "desc": "Dúvida falada vira flashcard Anki + caderno de erros na matéria certa.",
-     "instrucao": "Transformar dúvidas e erros em flashcards Anki e entradas no caderno de "
-                  "erros do MedCof, na matéria correta."},
-    {"label": "🎮 Jogo MedCof (rodada)", "intencao": "jogo", "inbox": False,
-     "desc": "Rodada do jogo de questões — transcrição crua da tua resposta/raciocínio, "
-             "guardada separada em jogo-sessoes/ (não vira nota nem inbox).",
+    # ── 🧠 Pessoal (conhecimento → Inbox kepano) ──
+    {"vault": "pessoal", "label": "📝 Nota / ideia", "intencao": "nota", "inbox": True,
+     "desc": "Transcrição corrigida; o Claude arquiva como nota Evergreen e conecta [[ ]].",
+     "instrucao": "Arquivar como nota Evergreen (ideia atômica) e conectar [[ ]] ao vault."},
+    {"vault": "pessoal", "label": "🧠 Brainstorm", "intencao": "brainstorm", "inbox": True,
+     "desc": "Mastiga uma ideia solta em problemas + sugestões pro Claude resolver.",
      "instrucao": ""},
-    {"label": "💰 Gasto → finanças", "intencao": "financa", "inbox": True,
-     "desc": "Fala um gasto e o Claude registra valor/categoria/data nas finanças.",
-     "instrucao": "Extrair valor, categoria e data e registrar no controle financeiro "
-                  "(10_FINANCE). Detalhe sensível só na planilha (privacidade)."},
-    {"label": "🎬 Ideia → roteiro (canal)", "intencao": "roteiro", "inbox": True,
-     "desc": "Ideia bruta vira roteiro do The Deep Sync com as marcações de edição.",
-     "instrucao": "Estruturar como roteiro do The Deep Sync, no DNA de voz da Fernanda, "
-                  "com as marcações [PICO/VISUAL/BATIDA/CLOSE]."},
-    {"label": "🔬 Artigo → ficha de leitura", "intencao": "pesquisa", "inbox": True,
+    {"vault": "pessoal", "label": "🔬 Artigo → ficha", "intencao": "pesquisa", "inbox": True,
      "desc": "Comentário sobre um paper vira ficha (PICO, viés, GRADE).",
-     "instrucao": "Estruturar como ficha de leitura científica: PICO, risco de viés, GRADE "
-                  "e o que aproveitar; salvar na biblioteca de pesquisa."},
-    {"label": "✉️ E-mail → rascunho", "intencao": "email", "inbox": True,
+     "instrucao": "Estruturar como ficha de leitura científica (Paper Template): PICO, risco "
+                  "de viés, GRADE e o que aproveitar; conectar [[People]]/[[Conditions]]."},
+    {"vault": "pessoal", "label": "🩺 Caso clínico", "intencao": "caso", "inbox": True,
+     "desc": "Narra um caso de plantão → vira caso de estudo SEM dado identificável.",
+     "instrucao": "Estruturar como Condition/caso clínico ANONIMIZADO (remover TODO dado "
+                  "identificável — LGPD/sigilo médico). Nunca expor o paciente."},
+    {"vault": "pessoal", "label": "📚 Estudo (MedCof)", "intencao": "estudo", "inbox": True,
+     "desc": "Dúvida falada vira flashcard + caderno de erros na matéria certa.",
+     "instrucao": "Transformar dúvidas/erros em flashcards e entradas no caderno de erros "
+                  "do MedCof, na matéria correta."},
+    {"vault": "pessoal", "label": "🎬 Ideia → roteiro", "intencao": "roteiro", "inbox": True,
+     "desc": "Ideia bruta vira roteiro do The Deep Sync com as marcações de edição.",
+     "instrucao": "Estruturar como roteiro do The Deep Sync (padrão série sXXeYY), no DNA de "
+                  "voz da Fernanda, com as marcações [PICO/VISUAL/BATIDA/CLOSE]."},
+    {"vault": "pessoal", "label": "✍️ Livro / cena", "intencao": "livro", "inbox": True,
+     "desc": "Ideia ou cena do romance → vira nota no kit de ficção (Manuscritos/).",
+     "instrucao": "Estruturar como Cena (Cena Template) ou ideia do romance e linkar à "
+                  "página-mãe do livro em Manuscritos/; preencher book/capitulo/ordem."},
+    # ── ⚙️ Ações (dispara a ação + recibo no Inbox do Pessoal) ──
+    {"vault": "acoes", "label": "🤝 Reunião → ata", "intencao": "reuniao", "inbox": True,
+     "desc": "Vira ata + tarefas + eventos (grave com 🔊 áudio do PC ligado).",
+     "instrucao": "Gerar uma ATA (decisões e pontos-chave), extrair TAREFAS com prazos, "
+                  "criar os compromissos no Google Calendar e deixar o recibo na nota."},
+    {"vault": "acoes", "label": "📅 Agenda", "intencao": "agenda", "inbox": True,
+     "desc": "Fala os compromissos e o Claude cria os eventos no calendário certo.",
+     "instrucao": "Extrair cada compromisso (título, data, hora) e criar no Google Calendar, "
+                  "no calendário correspondente; deixar o recibo (link) na nota."},
+    {"vault": "acoes", "label": "💰 Finança", "intencao": "financa", "inbox": True,
+     "desc": "Fala um gasto e o Claude registra valor/categoria/data.",
+     "instrucao": "Extrair valor, categoria e data e registrar no controle financeiro "
+                  "(Maestro/10_FINANCE). Detalhe sensível só na planilha (privacidade)."},
+    {"vault": "acoes", "label": "✉️ E-mail → rascunho", "intencao": "email", "inbox": True,
      "desc": "Dita o e-mail e o Claude deixa o RASCUNHO pronto (não envia).",
      "instrucao": "Redigir um RASCUNHO de e-mail no Gmail conforme o pedido. NÃO enviar — "
                   "só deixar pronto para a Fernanda revisar."},
-    {"label": "🩺 Caso clínico (anonimizar)", "intencao": "caso", "inbox": True,
-     "desc": "Narra um caso de plantão → vira caso de estudo SEM dado identificável.",
-     "instrucao": "Estruturar como caso clínico ANONIMIZADO para estudo: remover TODO dado "
-                  "identificável (LGPD/sigilo médico). Nunca expor o paciente."},
-    {"label": "🔒 Diário privado", "intencao": "diario", "inbox": False,
-     "desc": "Desabafo/diário: só transcreve limpo e guarda no vault PRIVADO. Não vira conteúdo.",
+    # ── 🔒 Privado (fora do inbox) ──
+    {"vault": "privado", "label": "🔒 Diário", "intencao": "diario", "inbox": False,
+     "desc": "Desabafo/diário: só transcreve limpo e guarda no Privado. Não vira conteúdo.",
      "instrucao": ""},
-    {"label": "🧠 Brainstorm → inbox", "intencao": "brainstorm", "inbox": True,
-     "desc": "Mastiga uma ideia solta em problemas + sugestões pro Claude resolver.",
+    {"vault": "privado", "label": "🎮 Jogo MedCof", "intencao": "jogo", "inbox": False,
+     "desc": "Rodada do jogo de questões — transcrição crua do raciocínio, guardada à parte.",
+     "instrucao": ""},
+    # ── 🎬 Vídeo (cru) ──
+    {"vault": "video", "label": "🎬 Áudio de vídeo (cru)", "intencao": "video", "inbox": False,
+     "desc": "Transcrição CRUA da gravação do canal (sem IA) + mantém o WAV pro pipeline.",
      "instrucao": ""},
 ]
 MODO_LABELS     = [m["label"] for m in MODOS]
 MODOS_POR_LABEL = {m["label"]: m for m in MODOS}
 
+def modos_do_vault(vault_id):
+    return [m for m in MODOS if m["vault"] == vault_id]
+
 FONT  = "Segoe UI"
-BG    = "#fafaf9"
-BG2   = "#f3f4f6"
-CARD  = "#ffffff"
+
+# ── Tema (claro/escuro). Padrão: escuro. config.json["tema"] sobrescreve. ──
+def _tema_inicial():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f).get("tema", "escuro")
+    except Exception:
+        return "escuro"
+
+PALETAS = {
+    "claro":  {"BG": "#fafaf9", "BG2": "#f3f4f6", "CARD": "#ffffff",
+               "TXT": "#111827", "TXT2": "#6b7280", "BORDER": "#e5e7eb"},
+    "escuro": {"BG": "#1e1e2e", "BG2": "#181825", "CARD": "#27293d",
+               "TXT": "#e4e4e7", "TXT2": "#a1a1aa", "BORDER": "#3f3f56"},
+}
+TEMA = _tema_inicial()
+_P = PALETAS.get(TEMA, PALETAS["escuro"])
+BG, BG2, CARD = _P["BG"], _P["BG2"], _P["CARD"]
+TXT, TXT2, BORDER = _P["TXT"], _P["TXT2"], _P["BORDER"]
+# Cores de destaque — funcionam nos dois temas.
 REC   = "#ef4444"
-TR    = "#6366f1"
-GREEN = "#059669"
+TR    = "#818cf8"
+GREEN = "#10b981"
 AMBER = "#f59e0b"
-TXT   = "#111827"
-TXT2  = "#6b7280"
-BORDER = "#e5e7eb"
 
 
 def load_config():
@@ -143,6 +199,7 @@ class Sussurro:
         self.root.geometry("800x660")
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
+        self._apply_ttk_theme()
         _set_icon(root, os.path.join(ICONS_DIR, "sussurro.ico"))
 
         self.cfg          = load_config()
@@ -156,12 +213,38 @@ class Sussurro:
         self._timer_sec   = 0
 
         os.makedirs(WAV_DIR, exist_ok=True)
-        obs = self.cfg.get("pasta_obsidian", "")
-        if obs:
-            os.makedirs(obs, exist_ok=True)
+        for _vid in ("pessoal", "acoes", "privado", "jogo", "video"):
+            try:
+                os.makedirs(self._vault_dir(_vid), exist_ok=True)
+            except Exception:
+                pass
 
         self._build_ui()
         threading.Thread(target=self._load_model, daemon=True).start()
+
+    def _apply_ttk_theme(self):
+        """Temar os widgets ttk (Notebook/Combobox/Progressbar) conforme a paleta."""
+        try:
+            style = ttk.Style()
+            style.theme_use("clam")
+            style.configure(".", background=BG, foreground=TXT, fieldbackground=CARD)
+            style.configure("TNotebook", background=BG, borderwidth=0)
+            style.configure("TNotebook.Tab", background=BG2, foreground=TXT2,
+                            padding=(14, 6), borderwidth=0)
+            style.map("TNotebook.Tab",
+                      background=[("selected", CARD)], foreground=[("selected", TXT)])
+            style.configure("TCombobox", fieldbackground=CARD, background=CARD,
+                            foreground=TXT, arrowcolor=TXT, bordercolor=BORDER)
+            style.map("TCombobox",
+                      fieldbackground=[("readonly", CARD)], foreground=[("readonly", TXT)])
+            style.configure("TProgressbar", background=TR, troughcolor=BG2, borderwidth=0)
+            # Lista suspensa do Combobox (é um widget tk por baixo).
+            self.root.option_add("*TCombobox*Listbox.background", CARD)
+            self.root.option_add("*TCombobox*Listbox.foreground", TXT)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", TR)
+            self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        except Exception:
+            pass
 
     # ─── UI ──────────────────────────────────────────────────────────────────
 
@@ -198,11 +281,22 @@ class Sussurro:
         self.prov_combo.pack(side="left", pady=8)
         self._refresh_providers()
 
-        tk.Label(bar, text="  Modo:", font=(FONT, 10, "bold"),
+        tk.Label(bar, text="  Onde:", font=(FONT, 10, "bold"),
                  fg=TXT, bg=CARD).pack(side="left", padx=(14, 4))
-        self.mode_var = tk.StringVar(value=MODO_LABELS[0])
-        ttk.Combobox(bar, textvariable=self.mode_var, values=MODO_LABELS,
-                     state="readonly", width=26, font=(FONT, 10)).pack(side="left", pady=8)
+        self.vault_var = tk.StringVar(value=VAULT_LABELS[0])
+        vcombo = ttk.Combobox(bar, textvariable=self.vault_var, values=VAULT_LABELS,
+                              state="readonly", width=13, font=(FONT, 10))
+        vcombo.pack(side="left", pady=8)
+        vcombo.bind("<<ComboboxSelected>>", self._on_vault_change)
+
+        tk.Label(bar, text="  Tipo:", font=(FONT, 10, "bold"),
+                 fg=TXT, bg=CARD).pack(side="left", padx=(10, 4))
+        _modos0 = modos_do_vault(VAULTS[0]["id"])
+        self.mode_var = tk.StringVar(value=_modos0[0]["label"])
+        self.mode_combo = ttk.Combobox(bar, textvariable=self.mode_var,
+                                       values=[m["label"] for m in _modos0],
+                                       state="readonly", width=22, font=(FONT, 10))
+        self.mode_combo.pack(side="left", pady=8)
         tk.Button(bar, text="ℹ", font=(FONT, 11, "bold"), bg=CARD, fg=TR,
                   relief="flat", cursor="hand2", padx=4,
                   command=self._show_modos_help).pack(side="left", padx=(2, 0))
@@ -431,7 +525,7 @@ class Sussurro:
     def _load_history(self):
         self.hist_list.delete(0, tk.END)
         self._hist_files = []
-        pastas = [self.cfg.get("pasta_obsidian", "") or WAV_DIR, INBOX_DIR]
+        pastas = [self._vault_dir("pessoal"), self._vault_dir("privado"), WAV_DIR]
         encontrados = {}
         for pasta in pastas:
             for f in glob.glob(os.path.join(pasta, "*.md")):
@@ -895,6 +989,8 @@ class Sussurro:
             if not self.cfg.get("usar_ia_para_lapidacao", True):
                 prov = None   # IA desligada → só transcrição crua, sem chamar o provider
             modo = self._selected_modo()
+            if modo["intencao"] == "video":
+                prov = None   # vídeo: transcrição CRUA, sem chamar IA
 
             if modo["intencao"] == "brainstorm":
                 if not prov:
@@ -938,22 +1034,24 @@ class Sussurro:
             tem_comando = bool(ia and ia.get("tem_comando"))
 
             if modo["intencao"] == "diario":
-                # Diário/desabafo: NÃO vira comando, NÃO vai pro Claude. Guarda no vault privado.
+                # Diário/desabafo: NÃO vira comando, NÃO vai pro Claude. Guarda no Privado.
                 path = self._save_private(md)
                 destino_msg = f"🔒 Diário salvo (privado): {os.path.basename(path)}."
             elif modo["intencao"] == "jogo":
                 # Rodada do jogo: guarda separada; a Fernanda cola a transcrição pro Claude.
                 path = self._save_jogo(md)
-                destino_msg = (f"🎮 Rodada salva em jogo-sessoes: {os.path.basename(path)}. "
+                destino_msg = (f"🎮 Rodada salva: {os.path.basename(path)}. "
                                f"Cola a transcrição pro Claude jogar/corrigir.")
-            elif modo["inbox"] or tem_comando:
-                # Modos de ação (ou nota com comando) → inbox p/ o Claude executar.
-                path = self._save_inbox(md)
-                destino_msg = (f"{modo['label']} → inbox: {os.path.basename(path)}. "
-                               f"Peça ao Claude para processar o inbox (ele executa).")
+            elif modo["intencao"] == "video":
+                # Áudio de vídeo: transcrição crua pro pipeline; o WAV fica em transcricoes/.
+                path = self._save_video(md)
+                destino_msg = (f"🎬 Áudio de vídeo (cru) salvo: {os.path.basename(path)}. "
+                               f"WAV em transcricoes/ pro pipeline de edição.")
             else:
-                self._save_md(md)
-                destino_msg = "Nota salva e conectada. Veja a aba 'Markdown' ou 'Histórico'."
+                # 🧠 Pessoal + ⚙️ Ações → Inbox kepano (o Claude organiza / dispara a ação).
+                path = self._save_inbox(md, "pessoal")
+                destino_msg = (f"{modo['label']} → inbox: {os.path.basename(path)}. "
+                               f"Peça ao Claude pra processar o inbox.")
 
             ia_text = texto
             if ia:
@@ -1019,7 +1117,7 @@ class Sussurro:
 
     def _save_md(self, md):
         ts    = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        pasta = self.cfg.get("pasta_obsidian", "") or WAV_DIR
+        pasta = self._vault_dir("pessoal")
         path  = os.path.join(pasta, f"{ts}.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(md)
@@ -1027,10 +1125,9 @@ class Sussurro:
             text=f"Salvo: {os.path.basename(path)}"))
 
     def _save_private(self, md):
-        """Modo Diário: salva no vault PRIVADO (desenvolvimento-pessoal), nunca no inbox."""
+        """Modo Diário: salva no destino PRIVADO, nunca no inbox."""
         ts    = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        vault = os.path.dirname(INBOX_DIR)
-        pasta = os.path.join(vault, "04_PROJECTS", "desenvolvimento-pessoal", "diario-voz")
+        pasta = self._vault_dir("privado")
         os.makedirs(pasta, exist_ok=True)
         path  = os.path.join(pasta, f"{ts}_diario.md")
         with open(path, "w", encoding="utf-8") as f:
@@ -1042,14 +1139,25 @@ class Sussurro:
     def _save_jogo(self, md):
         """Modo Jogo: rodadas do jogo de questões num lugar só, fora das notas/inbox."""
         ts    = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        vault = os.path.dirname(INBOX_DIR)
-        pasta = os.path.join(vault, "04_PROJECTS", "residency-system", "jogo-sessoes")
+        pasta = self._vault_dir("jogo")
         os.makedirs(pasta, exist_ok=True)
         path  = os.path.join(pasta, f"{ts}_rodada.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(md)
         self.root.after(0, lambda: self.file_lbl.configure(
             text=f"🎮 Rodada: {os.path.basename(path)}"))
+        return path
+
+    def _save_video(self, md):
+        """Modo Vídeo: transcrição CRUA da gravação do canal pro pipeline de edição."""
+        ts    = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        pasta = self._vault_dir("video")
+        os.makedirs(pasta, exist_ok=True)
+        path  = os.path.join(pasta, f"{ts}_video.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(md)
+        self.root.after(0, lambda: self.file_lbl.configure(
+            text=f"🎬 Vídeo (cru): {os.path.basename(path)}  ·  WAV em transcricoes/"))
         return path
 
     def _build_voz_md(self, texto, ia, lang, duracao, intencao="nota", extra_instrucao=""):
@@ -1183,15 +1291,38 @@ class Sussurro:
         )
         return md
 
-    def _save_inbox(self, md):
-        ts   = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        os.makedirs(INBOX_DIR, exist_ok=True)
-        path = os.path.join(INBOX_DIR, f"{ts}_brainstorm.md")
+    def _save_inbox(self, md, vault_id="pessoal"):
+        ts    = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        pasta = self._vault_dir(vault_id)
+        os.makedirs(pasta, exist_ok=True)
+        path  = os.path.join(pasta, f"{ts}_inbox.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(md)
         self.root.after(0, lambda: self.file_lbl.configure(
             text=f"Inbox: {os.path.basename(path)}"))
+        self._maybe_auto_processar(path)
         return path
+
+    def _maybe_auto_processar(self, path):
+        """Dispara, por evento, o Claude Code headless pra organizar a captura no vault.
+        Roda destacado (não trava a UI). Liga/desliga via cfg['auto_processar']."""
+        if not self.cfg.get("auto_processar", False):
+            return
+        script = self.cfg.get("processador_cmd") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "auto_processar.sh")
+
+        def _run():
+            try:
+                subprocess.Popen(
+                    ["bash", script, path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True)   # destaca: sobrevive e não bloqueia
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.root.after(0, lambda: self._set_status(
+            "🤖 Captura salva — Claude organizando no vault (fundo)…", TR))
 
     def _brainstorm_preview(self, ia):
         partes = []
@@ -1224,7 +1355,6 @@ class Sussurro:
             ("Chave Gemini (GEMINI_API_KEY):",  "GEMINI_API_KEY",    True),
             ("Chave Anthropic (ANTHROPIC_API_KEY):", "ANTHROPIC_API_KEY", True),
             ("Chave OpenAI (OPENAI_API_KEY):",   "OPENAI_API_KEY",    True),
-            ("Pasta Obsidian (destino .md):",    "pasta_obsidian",    False),
         ]
         vars_ = {}
         for label, key, secret in fields:
@@ -1245,9 +1375,19 @@ class Sussurro:
         row.pack(fill="x", padx=20, pady=5)
         tk.Label(row, text="Lapidar com IA automaticamente:", font=(FONT, 10),
                  fg=TXT, bg=BG, width=30, anchor="w").pack(side="left")
-        tk.Checkbutton(row, variable=ia_var, bg=BG).pack(side="left")
+        tk.Checkbutton(row, variable=ia_var, bg=BG, activebackground=BG,
+                       selectcolor=BG2).pack(side="left")
 
-        tk.Label(win, text="Chaves ficam salvas em .env — nunca em config.json.",
+        tema_var = tk.StringVar(value=self.cfg.get("tema", "escuro"))
+        row = tk.Frame(win, bg=BG)
+        row.pack(fill="x", padx=20, pady=5)
+        tk.Label(row, text="Tema (reabrir p/ aplicar):", font=(FONT, 10),
+                 fg=TXT, bg=BG, width=30, anchor="w").pack(side="left")
+        ttk.Combobox(row, textvariable=tema_var, values=["escuro", "claro"],
+                     state="readonly", width=12, font=(FONT, 10)).pack(side="left", padx=6)
+
+        tk.Label(win, text="Chaves ficam salvas em .env — nunca em config.json.  "
+                           "Caminhos dos vaults: edite config.json.",
                  font=(FONT, 9), fg=TXT2, bg=BG).pack(pady=(10, 0))
 
         def salvar():
@@ -1261,6 +1401,7 @@ class Sussurro:
                     os.makedirs(val, exist_ok=True) if val else None
             self.cfg["usar_ia_para_lapidacao"] = ia_var.get()
             self.ia_lapidar_var.set(ia_var.get())   # mantém o toggle da barra em sincronia
+            self.cfg["tema"] = tema_var.get()
             save_config(self.cfg)
             self._refresh_providers()
             self._update_ia_badge()
@@ -1274,6 +1415,21 @@ class Sussurro:
 
     def _selected_modo(self):
         return MODOS_POR_LABEL.get(self.mode_var.get(), MODOS[0])
+
+    def _selected_vault_id(self):
+        return VAULT_POR_LABEL.get(self.vault_var.get(), VAULTS[0])["id"]
+
+    def _on_vault_change(self, _evt=None):
+        """Ao trocar o vault (Onde), repopula os tipos (O quê) válidos pra ele."""
+        labels = [m["label"] for m in modos_do_vault(self._selected_vault_id())]
+        self.mode_combo.configure(values=labels)
+        if self.mode_var.get() not in labels:
+            self.mode_var.set(labels[0] if labels else "")
+
+    def _vault_dir(self, vault_id):
+        """Caminho do destino: config.json (cfg['vaults']) sobrescreve os defaults."""
+        paths = self.cfg.get("vaults", {}) or {}
+        return paths.get(vault_id) or VAULT_DEFAULTS.get(vault_id, WAV_DIR)
 
     def _show_modos_help(self):
         linhas = ["Cada modo segue o padrão:  falar → a IA transforma → vira ação/arquivo.\n"]
@@ -1289,7 +1445,7 @@ class Sussurro:
         ))
 
     def _open_folder(self):
-        pasta = self.cfg.get("pasta_obsidian") or WAV_DIR
+        pasta = self._vault_dir("pessoal")
         try:
             if sys.platform == "win32":
                 os.startfile(pasta)               # Windows
