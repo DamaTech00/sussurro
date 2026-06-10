@@ -30,4 +30,6 @@ python sussurro.py
 > Extraído da minha suíte pessoal de automações. O `ai_provider.py` acompanha para a importação de IA resolver; alguns caminhos assumem a estrutura original (ajuste conforme seu ambiente).
 
 ---
-Autoria: Fernanda Damasceno · parte do ecossistema **Dama Tech**.
+© 2026 **Fernanda Damasceno de Souza** · **Dama Tech**. Todos os direitos reservados — ver [LICENSE](LICENSE).
+
+Programa de computador de autoria própria (Lei 9.609/1998). Repositório público para fins de demonstração e comprovação de autoria/anterioridade.
