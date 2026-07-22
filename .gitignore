@@ -16,3 +16,8 @@ transcricoes/
 .venv/
 __pycache__/
 *.pyc
+
+# Sync state/logs
+.drive_sync.log
+.drive_sync_state.tsv
+*.bak-*

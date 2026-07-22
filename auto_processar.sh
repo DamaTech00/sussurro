@@ -7,7 +7,7 @@ set -uo pipefail
 
 NOTE="${1:-}"
 VAULT_ROOT="$HOME/FernandaOS"
-PESSOAL="$VAULT_ROOT/fernanda-obsidian-main"
+PESSOAL="$VAULT_ROOT/MySpace"
 LOG="$PESSOAL/Inbox/_auto-processador.log"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$HOME/.venvs/sussurro/bin/python"
@@ -29,11 +29,11 @@ RC=$?
 read -r -d '' PROMPT <<EOF
 Você é a camada de exceção do inbox da Fernanda — a Gemini não deu conta desta nota.
 Processe SOMENTE esta nota: $NOTE
-Siga "fernanda-obsidian-main/Inbox/_PROCESSAR (instruções pro Claude).md":
+Siga "MySpace/Inbox/_PROCESSAR (instruções pro Claude).md":
 decomponha em notas atômicas, aplique o template do tipo certo (use Write), crie os
 [[links]] cruzados (e o book/página-mãe se for ficção), marque a nota do inbox como
 'status: processado' preservando a transcrição, e acrescente 1 linha em
-"fernanda-obsidian-main/Inbox/_auto-processador.log".
+"MySpace/Inbox/_auto-processador.log".
 Não apague nada; ambíguo → '#revisar'; ops que precisem de Calendar/Gmail → 'TODO (interativo)'.
 EOF
 

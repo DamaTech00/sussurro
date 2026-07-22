@@ -1,7 +1,10 @@
 """
 AI Provider — MaestroVault
-Provedor unificado: Gemini (padrão) → Anthropic → OpenAI.
-Detecta automaticamente qual chave está configurada no .env.
+Provedor unificado com CASCATA DE FALLBACK:
+  DeepSeek (padrão, mais barato) → Gemini (rápido) → Anthropic → OpenAI.
+Detecta automaticamente quais chaves estão configuradas e, se o provedor da vez
+falhar (erro de API ou resposta fora de JSON), cai pro próximo da cadeia.
+Só "morre" (retorna {'erro'}) quando TODOS falham.
 """
 
 import os
@@ -9,41 +12,70 @@ import json
 import re
 from dotenv import load_dotenv
 
-ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-load_dotenv(dotenv_path=ENV_PATH, override=False)
+# Fonte de verdade das chaves: arquivos centrais em ~/.config/fernanda/.
+# Carregamos aqui (não só via ~/.profile) para que QUALQUER entrada — a GUI do
+# Sussurro, o auto-processador do inbox, scripts ad-hoc — enxergue as MESMAS
+# chaves. override=True faz um edit no arquivo valer na hora. A ordem importa:
+# o último carregado vence; secrets.env (canônico) fica por último.
+_HOME = os.path.expanduser("~")
+for _p in (
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),  # local (se existir)
+    os.path.join(_HOME, ".config", "fernanda", ".env"),
+    os.path.join(_HOME, ".config", "fernanda", "secrets.env"),
+):
+    if os.path.exists(_p):
+        load_dotenv(dotenv_path=_p, override=True)
 
 MODELOS_PADRAO = {
+    "deepseek":  "deepseek-chat",
     "gemini":    "gemini-2.5-flash",
     "anthropic": "claude-haiku-4-5-20251001",
     "openai":    "gpt-4o-mini",
 }
 
 NOMES_AMIGAVEIS = {
+    "deepseek":  "DeepSeek V3",
     "gemini":    "Gemini 2.5 Flash",
     "anthropic": "Claude Haiku",
     "openai":    "GPT-4o Mini",
 }
 
 ICONS_PROVEDOR = {
+    "deepseek":  "◇",
     "gemini":    "✦",
     "anthropic": "◈",
     "openai":    "◎",
 }
 
+# Ordem da cascata de fallback (mais barato → mais caro). O provedor escolhido em
+# AI_PROVIDER vai pra frente da fila; os demais entram como rede de segurança.
+ORDEM_FALLBACK = ["deepseek", "gemini", "anthropic", "openai"]
+
+# Teto de saída. A nota de voz preserva a transcrição INTEIRA corrigida, então
+# precisa de folga (um despejo de 10 min vira bastante texto + JSON).
+MAX_TOKENS = 8000
+
 
 def provedor_ativo() -> str | None:
     """Retorna o provedor configurado em AI_PROVIDER (ou o primeiro disponível)."""
-    preferido = os.environ.get("AI_PROVIDER", "gemini").lower()
+    preferido = os.environ.get("AI_PROVIDER", "deepseek").lower()
     if _tem_chave(preferido):
         return preferido
-    for p in ["gemini", "anthropic", "openai"]:
+    for p in ORDEM_FALLBACK:
         if _tem_chave(p):
             return p
     return None
 
 
+def cadeia_provedores() -> list[str]:
+    """Ordem de tentativa COM FALLBACK: o AI_PROVIDER na frente, o resto atrás."""
+    preferido = os.environ.get("AI_PROVIDER", "deepseek").lower()
+    ordem = [preferido] + [p for p in ORDEM_FALLBACK if p != preferido]
+    return [p for p in ordem if _tem_chave(p)]
+
+
 def provedores_disponiveis() -> list[str]:
-    return [p for p in ["gemini", "anthropic", "openai"] if _tem_chave(p)]
+    return [p for p in ORDEM_FALLBACK if _tem_chave(p)]
 
 
 def label_provedor(p: str) -> str:
@@ -54,6 +86,7 @@ def label_provedor(p: str) -> str:
 
 def _tem_chave(provedor: str) -> bool:
     chaves = {
+        "deepseek":  "DEEPSEEK_API_KEY",
         "gemini":    "GEMINI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
         "openai":    "OPENAI_API_KEY",
@@ -62,28 +95,83 @@ def _tem_chave(provedor: str) -> bool:
     return bool(os.environ.get(k, "").strip())
 
 
+# ── Cascata de despacho ───────────────────────────────────────────────────────
+
+def _despachar(prompt: str, provedor: str) -> dict:
+    """Manda o prompt p/ UM provedor e devolve o dict (JSON parseado ou _fallback)."""
+    if provedor == "deepseek":
+        return _deepseek(prompt)
+    if provedor == "gemini":
+        return _gemini(prompt)
+    if provedor == "anthropic":
+        return _anthropic(prompt)
+    if provedor == "openai":
+        return _openai(prompt)
+    raise ValueError(f"Provedor desconhecido: {provedor}")
+
+
+def _em_cascata(prompt: str, provedor: str | None = None,
+                incluir_claude_cli: bool = False) -> dict:
+    """
+    Núcleo do fallback. `provedor`, se vier, é só o LÍDER da fila — a cascata
+    continua nos demais se ele falhar (resiliência mesmo com seleção explícita
+    na GUI). Devolve o 1º JSON VÁLIDO; em erro de API ou resposta fora de JSON,
+    tenta o próximo. `incluir_claude_cli`: usa o `claude -p` (login Pro/Max, SEM
+    API key nem custo por token) como ÚLTIMO recurso, após todo o resto falhar.
+    """
+    if provedor:
+        cadeia = [provedor] + [p for p in cadeia_provedores() if p != provedor]
+    else:
+        cadeia = cadeia_provedores()
+    if not cadeia and not incluir_claude_cli:
+        return {"erro": "Nenhuma chave de API configurada no .env"}
+
+    ult_erro = None
+    fallback_guardado = None
+    for p in cadeia:
+        try:
+            r = _despachar(prompt, p)
+        except Exception as e:
+            ult_erro = f"[{p}] {e}"
+            continue
+        if isinstance(r, dict) and r.get("erro"):
+            ult_erro = r["erro"]
+            continue
+        if isinstance(r, dict) and r.pop("_fallback", False):
+            ult_erro = f"[{p}] resposta não veio em JSON"
+            fallback_guardado = fallback_guardado or r
+            continue
+        if isinstance(r, dict):
+            r["_provedor"] = p  # rastro: quem de fato respondeu
+        return r
+
+    # Último recurso: Claude via CLI (assinatura Pro/Max, sem chave de API).
+    if incluir_claude_cli:
+        try:
+            r = _claude_cli(prompt)
+            if not (isinstance(r, dict) and r.pop("_fallback", False)):
+                if isinstance(r, dict):
+                    r["_provedor"] = "claude-cli"
+                return r
+            fallback_guardado = fallback_guardado or r
+        except Exception as e:
+            ult_erro = f"[claude-cli] {e}"
+
+    if fallback_guardado is not None:
+        return fallback_guardado
+    return {"erro": ult_erro or "todos os provedores falharam"}
+
+
+# ── API pública ───────────────────────────────────────────────────────────────
+
 def polir_transcricao(texto_bruto: str, idioma_code: str = "pt",
-                       provedor: str | None = None) -> dict:
+                      provedor: str | None = None) -> dict:
     """
     Lapida uma transcrição e retorna dict:
       texto_lapidado, tags, resumo, tipo  (ou erro)
     """
-    if provedor is None:
-        provedor = provedor_ativo()
-    if provedor is None:
-        return {"erro": "Nenhuma chave de API configurada no .env"}
-
-    prompt = _build_prompt(texto_bruto, idioma_code)
-    try:
-        if provedor == "gemini":
-            return _gemini(prompt)
-        if provedor == "anthropic":
-            return _anthropic(prompt)
-        if provedor == "openai":
-            return _openai(prompt)
-    except Exception as e:
-        return {"erro": f"[{provedor}] {e}"}
-    return {"erro": f"Provedor desconhecido: {provedor}"}
+    return _em_cascata(_build_prompt(texto_bruto, idioma_code), provedor,
+                       incluir_claude_cli=True)
 
 
 def processar_brainstorm(texto_bruto: str, idioma_code: str = "pt",
@@ -94,22 +182,8 @@ def processar_brainstorm(texto_bruto: str, idioma_code: str = "pt",
       texto_lapidado, resumo, tags, tipo, categoria_sugerida,
       problemas (list), sugestoes (list)  (ou erro)
     """
-    if provedor is None:
-        provedor = provedor_ativo()
-    if provedor is None:
-        return {"erro": "Nenhuma chave de API configurada no .env"}
-
-    prompt = _build_brainstorm_prompt(texto_bruto, idioma_code)
-    try:
-        if provedor == "gemini":
-            return _gemini(prompt)
-        if provedor == "anthropic":
-            return _anthropic(prompt)
-        if provedor == "openai":
-            return _openai(prompt)
-    except Exception as e:
-        return {"erro": f"[{provedor}] {e}"}
-    return {"erro": f"Provedor desconhecido: {provedor}"}
+    return _em_cascata(_build_brainstorm_prompt(texto_bruto, idioma_code), provedor,
+                       incluir_claude_cli=True)
 
 
 def processar_voz(texto_bruto: str, idioma_code: str = "pt",
@@ -125,23 +199,8 @@ def processar_voz(texto_bruto: str, idioma_code: str = "pt",
       tags, tipo, categoria_sugerida, comandos (list), tem_comando (bool),
       conexoes (list)  (ou erro)
     """
-    if provedor is None:
-        provedor = provedor_ativo()
-    if provedor is None:
-        return {"erro": "Nenhuma chave de API configurada no .env"}
-
-    prompt = _build_voz_prompt(texto_bruto, idioma_code)
-    try:
-        if provedor == "gemini":
-            result = _gemini(prompt)
-        elif provedor == "anthropic":
-            result = _anthropic(prompt)
-        elif provedor == "openai":
-            result = _openai(prompt)
-        else:
-            return {"erro": f"Provedor desconhecido: {provedor}"}
-    except Exception as e:
-        return {"erro": f"[{provedor}] {e}"}
+    result = _em_cascata(_build_voz_prompt(texto_bruto, idioma_code), provedor,
+                         incluir_claude_cli=True)
 
     # Normaliza conexões: remove colchetes [[ ]] se a IA já os tiver incluído
     # (o Markdown da nota é quem embrulha em [[ ]], senão viraria [[[[x]]]]).
@@ -157,8 +216,8 @@ def planejar_inbox_kepano(nota_md: str, titulos_existentes=None,
                           paginas_livro=None, idioma_code: str = "pt",
                           provedor: str | None = None) -> dict:
     """
-    Pede à IA (Gemini por padrão) um PLANO de arquivamento kepano para uma nota
-    do inbox: que notas atômicas criar, com frontmatter pronto e [[links]].
+    Pede à IA um PLANO de arquivamento kepano para uma nota do inbox: que notas
+    atômicas criar, com frontmatter pronto e [[links]].
     O script `processar_inbox.py` é quem executa esse plano no filesystem.
 
     Retorna dict:
@@ -171,24 +230,9 @@ def planejar_inbox_kepano(nota_md: str, titulos_existentes=None,
       }
     ou {"erro": ...}
     """
-    if provedor is None:
-        provedor = provedor_ativo()
-    if provedor is None:
-        return {"erro": "Nenhuma chave de API configurada no .env"}
-
     prompt = _build_inbox_kepano_prompt(
         nota_md, titulos_existentes or [], paginas_livro or [], idioma_code)
-    try:
-        if provedor == "gemini":
-            return _gemini(prompt)
-        elif provedor == "anthropic":
-            return _anthropic(prompt)
-        elif provedor == "openai":
-            return _openai(prompt)
-        else:
-            return {"erro": f"Provedor desconhecido: {provedor}"}
-    except Exception as e:
-        return {"erro": f"[{provedor}] {e}"}
+    return _em_cascata(prompt, provedor)
 
 
 def _build_inbox_kepano_prompt(nota_md, titulos, paginas_livro, idioma_code):
@@ -249,24 +293,33 @@ Responda SOMENTE em JSON (nada fora do JSON):
 
 def resposta_livre(mensagem: str, provedor: str | None = None,
                    system: str = "") -> str:
-    """Envia uma mensagem e retorna a resposta como texto simples."""
-    if provedor is None:
-        provedor = provedor_ativo()
-    if provedor is None:
-        return "Nenhum provedor de IA disponível."
+    """Texto simples com cascata: provedor (líder) → resto → Claude CLI (Pro/Max)."""
+    if provedor:
+        cadeia = [provedor] + [p for p in cadeia_provedores() if p != provedor]
+    else:
+        cadeia = cadeia_provedores()
+    ult_erro = None
+    for p in cadeia:
+        try:
+            if p == "deepseek":
+                return _deepseek_livre(mensagem, system)
+            if p == "gemini":
+                return _gemini_livre(mensagem, system)
+            if p == "anthropic":
+                return _anthropic_livre(mensagem, system)
+            if p == "openai":
+                return _openai_livre(mensagem, system)
+        except Exception as e:
+            ult_erro = f"Erro: {e}"
+            continue
+    # Último recurso: Claude via CLI (assinatura, sem API key).
     try:
-        if provedor == "gemini":
-            return _gemini_livre(mensagem, system)
-        if provedor == "anthropic":
-            return _anthropic_livre(mensagem, system)
-        if provedor == "openai":
-            return _openai_livre(mensagem, system)
+        return _claude_cli_livre(mensagem, system)
     except Exception as e:
-        return f"Erro: {e}"
-    return "Provedor não suportado."
+        return ult_erro or f"Erro: {e}"
 
 
-# ── Implementações ────────────────────────────────────────────────────────────
+# ── Builders de prompt ────────────────────────────────────────────────────────
 
 def _build_prompt(texto, idioma_code):
     nomes = {"pt": "Português", "en": "English", "es": "Español", "de": "Deutsch"}
@@ -339,9 +392,6 @@ Ela usa o gravador "Sussurro" para despejar QUALQUER COISA: resumo do dia,
 ideias de conteúdo, pauta de podcast, rascunho de newsletter, liturgia/reflexões
 cristãs, perguntas a resolver, lembretes, ou pedidos diretos ao assistente (Claude).
 
-TRANSCRIÇÃO:
-{texto}
-
 TRANSCRIÇÃO BRUTA (pode conter palavras que o transcritor OUVIU ERRADO):
 {texto}
 
@@ -408,7 +458,73 @@ def _extrair_json(raw: str) -> dict | None:
 
 
 def _fallback(raw: str) -> dict:
-    return {"texto_lapidado": raw, "tags": [], "resumo": "", "tipo": "outro"}
+    # _fallback=True sinaliza p/ a cascata "não veio JSON" → tenta o próximo provedor.
+    return {"texto_lapidado": raw, "tags": [], "resumo": "", "tipo": "outro",
+            "_fallback": True}
+
+
+# Claude via CLI — ÚLTIMO recurso da cascata (login Claude Code Pro/Max, SEM
+# chave de API e SEM custo por token; só roda quando todo o resto falha).
+def _claude_bin() -> str:
+    import shutil
+    b = os.path.expanduser("~/.local/bin/claude")
+    return b if os.path.exists(b) else (shutil.which("claude") or "claude")
+
+
+def _claude_cli(prompt: str) -> dict:
+    import subprocess
+    full = prompt + ("\n\nResponda APENAS com o JSON pedido — sem cercas de "
+                     "código (```), sem texto antes ou depois.")
+    r = subprocess.run([_claude_bin(), "-p", full],
+                       capture_output=True, text=True, timeout=240)
+    if r.returncode != 0:
+        raise RuntimeError(f"claude -p saiu {r.returncode}: {(r.stderr or '').strip()[:200]}")
+    raw = (r.stdout or "").strip()
+    return _extrair_json(raw) or _fallback(raw)
+
+
+def _claude_cli_livre(msg: str, system: str) -> str:
+    import subprocess
+    full = f"{system}\n\n{msg}" if system else msg
+    r = subprocess.run([_claude_bin(), "-p", full],
+                       capture_output=True, text=True, timeout=240)
+    if r.returncode != 0:
+        raise RuntimeError(f"claude -p saiu {r.returncode}: {(r.stderr or '').strip()[:200]}")
+    return (r.stdout or "").strip()
+
+
+# ── Implementações por provedor ───────────────────────────────────────────────
+
+# DeepSeek (API compatível com OpenAI: base_url própria)
+def _deepseek(prompt: str) -> dict:
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    )
+    r = client.chat.completions.create(
+        model=MODELOS_PADRAO["deepseek"],
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=MAX_TOKENS,
+        response_format={"type": "json_object"},  # exige a palavra "json" no prompt (tem)
+    )
+    raw = r.choices[0].message.content
+    return _extrair_json(raw) or _fallback(raw)
+
+
+def _deepseek_livre(msg: str, system: str) -> str:
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    )
+    msgs = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    msgs.append({"role": "user", "content": msg})
+    return client.chat.completions.create(
+        model=MODELOS_PADRAO["deepseek"], messages=msgs, max_tokens=MAX_TOKENS
+    ).choices[0].message.content
 
 
 # Gemini
@@ -437,7 +553,7 @@ def _anthropic(prompt: str) -> dict:
     )
     msg = client.messages.create(
         model=MODELOS_PADRAO["anthropic"],
-        max_tokens=2000,
+        max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
     )
     return _extrair_json(msg.content[0].text) or _fallback(msg.content[0].text)
@@ -449,7 +565,7 @@ def _anthropic_livre(msg: str, system: str) -> str:
         api_key=os.environ["ANTHROPIC_API_KEY"],
         base_url=os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
     )
-    kwargs = {"model": MODELOS_PADRAO["anthropic"], "max_tokens": 2000,
+    kwargs = {"model": MODELOS_PADRAO["anthropic"], "max_tokens": MAX_TOKENS,
               "messages": [{"role": "user", "content": msg}]}
     if system:
         kwargs["system"] = system
@@ -463,7 +579,7 @@ def _openai(prompt: str) -> dict:
     r = client.chat.completions.create(
         model=MODELOS_PADRAO["openai"],
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000,
+        max_tokens=MAX_TOKENS,
     )
     raw = r.choices[0].message.content
     return _extrair_json(raw) or _fallback(raw)
@@ -477,5 +593,5 @@ def _openai_livre(msg: str, system: str) -> str:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": msg})
     return client.chat.completions.create(
-        model=MODELOS_PADRAO["openai"], messages=msgs, max_tokens=2000
+        model=MODELOS_PADRAO["openai"], messages=msgs, max_tokens=MAX_TOKENS
     ).choices[0].message.content

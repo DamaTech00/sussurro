@@ -19,6 +19,9 @@ import subprocess
 import json
 import re
 import glob
+import gc
+import shutil
+import tempfile
 from datetime import datetime
 from faster_whisper import WhisperModel
 from dotenv import load_dotenv, set_key
@@ -36,26 +39,75 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 WAV_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcricoes")
 ICONS_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "icons")
 
+# Glossário de termos da Fe — alimenta o Whisper (initial_prompt) p/ acertar a
+# grafia de jargão/nomes próprios NA FONTE, antes da IA corrigir. Curto de
+# propósito (o Whisper só usa ~224 tokens de contexto). Em PT, língua dominante.
+GLOSSARIO_WHISPER = (
+    "Contexto: Fernanda, estudante de medicina e pesquisadora. "
+    "Termos recorrentes: metanálise, revisão sistemática, PROSPERO, PRISMA, GRADE, "
+    "estradiol, ADT, tE2, câncer de próstata, ginecomastia, SPCG, "
+    "FAPESP, FINEP, ENAMED, residência médica, USCS, "
+    "The Deep Sync, MetaScouts, Dama Evidence, Claude Code, Obsidian, kepano, "
+    "vibe coding, MaestroVault, Insta360, FIFINE, Shotcut."
+)
+
 # ── Destinos (vaults). Caminhos reais; o config.json sobrescreve via cfg["vaults"]. ──
 # Arquitetura de dois cofres: cérebro (pessoal kepano) × maquinário (Maestro).
 HOME = os.path.expanduser("~")
 VAULT_DEFAULTS = {
-    # Pessoal (kepano): captura cai no Inbox p/ o Claude organizar no tipo certo.
-    "pessoal": os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Inbox"),
-    # Ações (ops): também cai no Inbox do Pessoal — o Claude dispara a ação e deixa o recibo.
-    "acoes":   os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Inbox"),
+    # Pessoal (kepano): captura cai no Inbox p/ o Hermes Agent organizar no tipo certo.
+    "pessoal": os.path.join(HOME, "FernandaOS", "MySpace", "Inbox"),
+    # Ações (ops): também cai no Inbox do Pessoal — o Hermes Agent dispara a ação e deixa o recibo.
+    "acoes":   os.path.join(HOME, "FernandaOS", "MySpace", "Inbox"),
     # Privado: diário/desabafo, nunca entra no inbox nem vira conteúdo.
-    "privado": os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Privado", "diario-voz"),
+    "privado": os.path.join(HOME, "FernandaOS", "MySpace", "Privado", "diario-voz"),
     # Jogo MedCof: rodadas guardadas à parte.
-    "jogo":    os.path.join(HOME, "FernandaOS", "fernanda-obsidian-main", "Privado", "jogo-sessoes"),
+    "jogo":    os.path.join(HOME, "FernandaOS", "MySpace", "Privado", "jogo-sessoes"),
     # Vídeo (cru): áudio das gravações do canal pro pipeline de edição.
     "video":   os.path.join(HOME, "FernandaOS", "Cofres", "The_Deep_Sync", "audio-bruto"),
 }
 # Compat: alguns trechos antigos ainda referenciam INBOX_DIR.
 INBOX_DIR = VAULT_DEFAULTS["pessoal"]
 
-SAMPLE_RATE = 16000
+
+def _desktop_dir():
+    """Resolve a Área de trabalho via XDG (~/.config/user-dirs.dirs), com fallbacks."""
+    try:
+        cfg = os.path.join(HOME, ".config", "user-dirs.dirs")
+        if os.path.exists(cfg):
+            with open(cfg, encoding="utf-8") as f:
+                for linha in f:
+                    if linha.strip().startswith("XDG_DESKTOP_DIR"):
+                        val = linha.split("=", 1)[1].strip().strip('"')
+                        val = val.replace("$HOME", HOME)
+                        if os.path.isdir(val):
+                            return val
+    except Exception:
+        pass
+    for c in ("Área de trabalho", "Área de Trabalho", "Desktop"):
+        p = os.path.join(HOME, c)
+        if os.path.isdir(p):
+            return p
+    return HOME
+
+
+# Espelho na Área de trabalho: cada captura (áudio + transcrição + md da IA) também
+# cai aqui, junta e visível, pra Fernanda não garimpar transcricoes/ e o Inbox.
+# config.json["espelho_area_trabalho"] sobrescreve o caminho; ["espelhar_area_trabalho"]
+# (bool) liga/desliga.
+ESPELHO_DEFAULT = os.path.join(_desktop_dir(), "Sussurro")
+
+# 48 kHz = qualidade de edição/podcast no WAV salvo. O Whisper NÃO precisa de 16 kHz aqui:
+# ao receber o CAMINHO do arquivo, o faster-whisper decodifica e reamostra pra 16 kHz
+# internamente — então a transcrição continua idêntica, mas o WAV fica em alta qualidade.
+SAMPLE_RATE = 48000
 CHANNELS    = 1
+
+# ── Transcrição segura p/ áudios longos (RAM só ~7,4 GB) ──────────────────────
+# Acima deste limiar, fatiamos o WAV em blocos e transcrevemos um de cada vez,
+# pra não estourar a memória (small + 49 min em 1 chamada → OOM killer).
+LIMITE_FATIAMENTO_S = 480   # 8 min: a partir daqui, transcreve em fatias
+FATIA_S             = 300   # 5 min por fatia (offset = idx * FATIA_S)
 
 IDIOMAS = {
     "🇧🇷 Português":   "pt",
@@ -68,9 +120,9 @@ IDIOMAS = {
 # Vaults / destinos (a "onde"). O 1º seletor da barra escolhe um destes.
 VAULTS = [
     {"id": "pessoal", "label": "🧠 Pessoal",
-     "desc": "Conhecimento (kepano) — cai no Inbox e o Claude organiza no tipo certo."},
+     "desc": "Conhecimento (kepano) — cai no Inbox e o Hermes Agent organiza no tipo certo."},
     {"id": "acoes",   "label": "⚙️ Ações",
-     "desc": "Ops (reunião/agenda/finança/email) — o Claude dispara a ação e deixa o recibo."},
+     "desc": "Ops (reunião/agenda/finança/email) — o Hermes Agent dispara a ação e deixa o recibo."},
     {"id": "privado", "label": "🔒 Privado",
      "desc": "Diário/desabafo — transcrição limpa, fora do inbox, nunca vira conteúdo."},
     {"id": "video",   "label": "🎬 Vídeo (cru)",
@@ -80,14 +132,14 @@ VAULT_LABELS    = [v["label"] for v in VAULTS]
 VAULT_POR_LABEL = {v["label"]: v for v in VAULTS}
 
 # Modos (a "o quê"): padrão "áudio → transformação → ação". Agrupados por vault.
-# 'intencao' vai no frontmatter; 'instrucao' é o que o Claude FAZ ao processar o inbox.
+# 'intencao' vai no frontmatter; 'instrucao' é o que o Hermes Agent FAZ ao processar o inbox.
 MODOS = [
     # ── 🧠 Pessoal (conhecimento → Inbox kepano) ──
     {"vault": "pessoal", "label": "📝 Nota / ideia", "intencao": "nota", "inbox": True,
-     "desc": "Transcrição corrigida; o Claude arquiva como nota Evergreen e conecta [[ ]].",
+     "desc": "Transcrição corrigida; o Hermes Agent arquiva como nota Evergreen e conecta [[ ]].",
      "instrucao": "Arquivar como nota Evergreen (ideia atômica) e conectar [[ ]] ao vault."},
     {"vault": "pessoal", "label": "🧠 Brainstorm", "intencao": "brainstorm", "inbox": True,
-     "desc": "Mastiga uma ideia solta em problemas + sugestões pro Claude resolver.",
+     "desc": "Mastiga uma ideia solta em problemas + sugestões pro Hermes Agent resolver.",
      "instrucao": ""},
     {"vault": "pessoal", "label": "🔬 Artigo → ficha", "intencao": "pesquisa", "inbox": True,
      "desc": "Comentário sobre um paper vira ficha (PICO, viés, GRADE).",
@@ -115,15 +167,15 @@ MODOS = [
      "instrucao": "Gerar uma ATA (decisões e pontos-chave), extrair TAREFAS com prazos, "
                   "criar os compromissos no Google Calendar e deixar o recibo na nota."},
     {"vault": "acoes", "label": "📅 Agenda", "intencao": "agenda", "inbox": True,
-     "desc": "Fala os compromissos e o Claude cria os eventos no calendário certo.",
+     "desc": "Fala os compromissos e o Hermes Agent cria os eventos no calendário certo.",
      "instrucao": "Extrair cada compromisso (título, data, hora) e criar no Google Calendar, "
                   "no calendário correspondente; deixar o recibo (link) na nota."},
     {"vault": "acoes", "label": "💰 Finança", "intencao": "financa", "inbox": True,
-     "desc": "Fala um gasto e o Claude registra valor/categoria/data.",
+     "desc": "Fala um gasto e o Hermes Agent registra valor/categoria/data.",
      "instrucao": "Extrair valor, categoria e data e registrar no controle financeiro "
                   "(Maestro/10_FINANCE). Detalhe sensível só na planilha (privacidade)."},
     {"vault": "acoes", "label": "✉️ E-mail → rascunho", "intencao": "email", "inbox": True,
-     "desc": "Dita o e-mail e o Claude deixa o RASCUNHO pronto (não envia).",
+     "desc": "Dita o e-mail e o Hermes Agent deixa o RASCUNHO pronto (não envia).",
      "instrucao": "Redigir um RASCUNHO de e-mail no Gmail conforme o pedido. NÃO enviar — "
                   "só deixar pronto para a Fernanda revisar."},
     # ── 🔒 Privado (fora do inbox) ──
@@ -211,6 +263,8 @@ class Sussurro:
         self.current_wav  = None
         self.current_ts   = None
         self._timer_sec   = 0
+        self._last_audio  = None   # última captura (numpy) p/ prévia: ouvir + onda
+        self._playing     = False
 
         os.makedirs(WAV_DIR, exist_ok=True)
         for _vid in ("pessoal", "acoes", "privado", "jogo", "video"):
@@ -368,6 +422,27 @@ class Sussurro:
                  text="↳ Grave a voz e clique Transcrever  ·  OU cole um texto na aba "
                       "“📝 Transcrição” e clique Processar Texto",
                  font=(FONT, 9), fg=TXT2, bg=BG).pack(pady=(0, 2))
+
+        # ── Prévia da gravação: ouvir + ver a onda + emendar, ANTES de transcrever ──
+        pf = tk.Frame(self.root, bg=BG)
+        pf.pack(fill="x", padx=24, pady=(2, 0))
+        self.play_btn = tk.Button(pf, text="🔊  Ouvir", font=(FONT, 10, "bold"),
+                                   bg=BG2, fg=TXT, relief="flat", padx=12, pady=6,
+                                   cursor="hand2", command=self._toggle_play,
+                                   state="disabled")
+        self.play_btn.pack(side="left")
+        self.cont_btn = tk.Button(pf, text="➕  Continuar gravação", font=(FONT, 10, "bold"),
+                                   bg=BG2, fg=TXT, relief="flat", padx=12, pady=6,
+                                   cursor="hand2", command=self._continue_recording,
+                                   state="disabled")
+        self.cont_btn.pack(side="left", padx=8)
+        tk.Label(pf, text="↳ ouça/veja e, se quiser, regrave (GRAVAR) ou emende (Continuar) "
+                          "antes de Transcrever",
+                 font=(FONT, 8), fg=TXT2, bg=BG).pack(side="left", padx=(6, 0))
+        self.wave_canvas = tk.Canvas(self.root, height=54, bg=BG2, relief="flat",
+                                     highlightthickness=1, highlightbackground=BORDER)
+        self.wave_canvas.pack(fill="x", padx=24, pady=(4, 2))
+        self.wave_canvas.bind("<Configure>", lambda _e: self._draw_waveform())
 
         # Progress
         self.progress = ttk.Progressbar(self.root, mode="indeterminate", length=300)
@@ -764,26 +839,36 @@ class Sussurro:
     def toggle_recording(self):
         (self._stop_recording if self.recording else self._start_recording)()
 
-    def _start_recording(self):
+    def _start_recording(self, append=False):
         if self.model is None:
             self._set_status("Aguarde, modelo ainda carregando...", AMBER)
             return
 
-        cap_mic   = self.mic_var.get()
-        cap_media = self.media_var.get()
-        if not (cap_mic or cap_media):       # nada marcado → assume microfone
-            cap_mic = True
-            self.mic_var.set(True)
+        # Ao emendar (Continuar), mantém as fontes e os chunks já gravados.
+        if append and getattr(self, "_last_audio", None) is not None:
+            cap_mic   = getattr(self, "_cap_mic", True)
+            cap_media = getattr(self, "_cap_media", False)
+        else:
+            append = False
+            cap_mic   = self.mic_var.get()
+            cap_media = self.media_var.get()
+            if not (cap_mic or cap_media):   # nada marcado → assume microfone
+                cap_mic = True
+                self.mic_var.set(True)
         self._cap_mic   = cap_mic
         self._cap_media = cap_media
 
+        self._stop_playback()
         self.recording   = True
-        self.audio_mic   = []
-        self.audio_media = []
+        if not append:
+            self.audio_mic   = []
+            self.audio_media = []
+            self._timer_sec  = 0
         self.streams     = []
-        self._timer_sec  = 0
         self.rec_btn.configure(text="⏹  PARAR", bg="#dc2626")
         self.tr_btn.configure(state="disabled")
+        self.play_btn.configure(state="disabled")
+        self.cont_btn.configure(state="disabled")
 
         # Microfone — 16 kHz mono (dispositivo de entrada padrão)
         if cap_mic:
@@ -804,7 +889,7 @@ class Sussurro:
                     raise RuntimeError("biblioteca 'soundcard' não instalada")
                 spk = sc.default_speaker()
                 self._loop_mic = sc.get_microphone(spk.name, include_loopback=True)
-                self._media_sr = SAMPLE_RATE     # soundcard reamostra para 16 kHz
+                self._media_sr = SAMPLE_RATE     # soundcard reamostra para SAMPLE_RATE (48 kHz)
                 self._media_thread = threading.Thread(
                     target=self._record_media_loop, daemon=True)
                 self._media_thread.start()
@@ -918,8 +1003,78 @@ class Sussurro:
             wf.writeframes(audio_i16.tobytes())
         self.current_wav = path
         self.current_ts  = ts
+        self._last_audio = audio                      # p/ ouvir + desenhar a onda
         self.file_lbl.configure(text=f"Áudio: {os.path.basename(path)}")
+        self.play_btn.configure(state="normal")
+        self.cont_btn.configure(state="normal")
+        self._draw_waveform()
         return True
+
+    # ─── Prévia da gravação (ouvir / onda / emendar antes de transcrever) ─────
+
+    def _toggle_play(self):
+        """Ouve a última captura (toggle tocar/parar). Não bloqueia a UI."""
+        if self._playing:
+            self._stop_playback()
+            return
+        if self._last_audio is None or len(self._last_audio) == 0:
+            return
+        try:
+            sd.play(np.clip(self._last_audio, -1, 1), SAMPLE_RATE)
+        except Exception as e:
+            self._set_status(f"Não consegui tocar o áudio: {e}", AMBER)
+            return
+        self._playing = True
+        self.play_btn.configure(text="⏹  Parar")
+        dur_ms = int(len(self._last_audio) / SAMPLE_RATE * 1000) + 250
+        self._play_after = self.root.after(dur_ms, self._stop_playback)
+
+    def _stop_playback(self):
+        if getattr(self, "_playing", False):
+            try:
+                sd.stop()
+            except Exception:
+                pass
+        self._playing = False
+        if hasattr(self, "play_btn"):
+            self.play_btn.configure(text="🔊  Ouvir")
+        pa = getattr(self, "_play_after", None)
+        if pa is not None:
+            try:
+                self.root.after_cancel(pa)
+            except Exception:
+                pass
+            self._play_after = None
+
+    def _continue_recording(self):
+        """Emenda mais áudio na captura atual (não descarta o que já gravou)."""
+        if self.recording or self._last_audio is None:
+            return
+        self._start_recording(append=True)   # religa streams, status e timer
+        if self.recording:
+            self._set_status("🔴  Emendando na gravação anterior... clique PARAR.", REC)
+
+    def _draw_waveform(self):
+        """Desenha a forma de onda da última captura no canvas de prévia."""
+        c = getattr(self, "wave_canvas", None)
+        if c is None:
+            return
+        c.delete("all")
+        a = self._last_audio
+        w = int(c.winfo_width() or 0)
+        h = int(c.winfo_height() or 54)
+        mid = h / 2
+        if a is None or len(a) == 0 or w <= 1:
+            return
+        step = max(1, len(a) // w)
+        for x in range(w):
+            seg = a[x * step:(x + 1) * step]
+            if len(seg) == 0:
+                break
+            pk = float(np.abs(seg).max())
+            y = min(mid - 1, pk * mid * 0.95)
+            c.create_line(x, mid - y, x, mid + y, fill=TR)
+        c.create_line(0, mid, w, mid, fill=BORDER)
 
     # ─── Transcrição ─────────────────────────────────────────────────────────
 
@@ -964,13 +1119,92 @@ class Sussurro:
                                      self.rec_btn.configure(state="normal"),
                                      self.txt_btn.configure(state="normal")))
 
+    def _audio_duracao_s(self, path):
+        """Duração do WAV em segundos, barata (sem decodificar tudo)."""
+        try:
+            with wave.open(path, "rb") as wf:
+                fr = wf.getframerate() or SAMPLE_RATE
+                return wf.getnframes() / float(fr)
+        except Exception:
+            try:
+                out = subprocess.check_output(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=nokey=1:noprint_wrappers=1", path],
+                    text=True)
+                return float(out.strip())
+            except Exception:
+                return 0.0
+
+    def _transcrever_em_fatias(self, wav_path, lang_code, dur_total):
+        """Áudio longo → fatia o WAV em blocos de FATIA_S e transcreve um por vez,
+        carregando o modelo só 1x e liberando memória entre blocos (anti-OOM).
+        Retorna o MESMO contrato do caminho rápido: (texto, lang_detected, duracao)."""
+        tmpdir = tempfile.mkdtemp(prefix="sussurro_fatias_")
+        try:
+            n_prev = int(dur_total // FATIA_S) + 1
+            self.root.after(0, lambda: self._set_status(
+                f"Áudio longo (~{dur_total/60:.0f} min) — transcrevendo em "
+                f"{n_prev} blocos de {FATIA_S//60} min (modo seguro)...", TR))
+            padrao = os.path.join(tmpdir, "fatia_%04d.wav")
+            # -c copy: corte sem recodificar (PCM), barato; -f segment fatia por tempo.
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                 "-i", wav_path, "-f", "segment", "-segment_time", str(FATIA_S),
+                 "-c", "copy", padrao],
+                check=True)
+            fatias = sorted(glob.glob(os.path.join(tmpdir, "fatia_*.wav")))
+            if not fatias:
+                raise RuntimeError("ffmpeg não gerou nenhum bloco de áudio")
+
+            partes = []
+            lang_detected = lang_code
+            total = len(fatias)
+            for idx, ch in enumerate(fatias):
+                offset = idx * FATIA_S
+                self.root.after(0, lambda i=idx, n=total: self._set_status(
+                    f"Transcrevendo bloco {i+1}/{n} (áudio longo)...", TR))
+                segments, info = self.model.transcribe(
+                    ch,
+                    language=lang_code,
+                    initial_prompt=GLOSSARIO_WHISPER,
+                    vad_filter=True,
+                    beam_size=1,                 # leve: menos memória/tempo por bloco
+                )
+                for s in segments:
+                    # offset aplicado aos tempos do segmento p/ manter a linha do tempo
+                    # global (s.start+offset / s.end+offset). O app só consome o texto.
+                    t = s.text.strip()
+                    if t:
+                        partes.append(t)
+                if lang_detected is None:
+                    lang_detected = info.language
+                del segments, info
+                gc.collect()
+
+            texto = " ".join(partes).strip()
+            return texto, (lang_detected or lang_code), dur_total
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def _run_transcription(self):
         try:
             lang_code = IDIOMAS.get(self.lang_var.get())
-            segments, info = self.model.transcribe(self.current_wav, language=lang_code)
-            texto = " ".join(s.text.strip() for s in segments).strip()
-            lang_detected = lang_code or info.language
-            duracao = info.duration
+            dur = self._audio_duracao_s(self.current_wav)
+            if dur > LIMITE_FATIAMENTO_S:
+                # Caminho seguro p/ áudios longos: fatiado, baixo pico de memória.
+                texto, lang_detected, duracao = self._transcrever_em_fatias(
+                    self.current_wav, lang_code, dur)
+            else:
+                # Caminho rápido (inalterado) p/ áudios curtos: 1 chamada só.
+                segments, info = self.model.transcribe(
+                    self.current_wav,
+                    language=lang_code,
+                    initial_prompt=GLOSSARIO_WHISPER,   # acerta jargão na fonte
+                    vad_filter=True,                    # pula silêncio: + rápido, - alucinação
+                )
+                texto = " ".join(s.text.strip() for s in segments).strip()
+                lang_detected = lang_code or info.language
+                duracao = info.duration
             self.root.after(0, lambda: self.text_raw.insert("1.0", texto))
         except Exception as e:
             self._set_status(f"Erro na transcrição: {e}", REC)
@@ -1006,6 +1240,7 @@ class Sussurro:
                     return
                 md = self._build_brainstorm_md(texto, ia, lang_detected, duracao)
                 path = self._save_inbox(md)
+                self._espelhar(path, texto)
                 ia_text = self._brainstorm_preview(ia)
                 self.root.after(0, lambda: (self.text_ia.insert("1.0", ia_text),
                                             self._apply_md_highlight(self.text_ia)))
@@ -1014,17 +1249,26 @@ class Sussurro:
                 self.root.after(0, lambda: self.nb.select(1))
                 self._set_status(
                     f"Brainstorm salvo no inbox: {os.path.basename(path)}. "
-                    f"Peça ao Claude para processar o inbox.", GREEN)
+                    f"Peça ao Hermes Agent para processar o inbox.", GREEN)
                 self.root.after(0, self._load_history)
                 return
 
             # ── Fluxo unificado: nota de voz com detecção de comando + conexões ──
+            # Lapidação por contexto é o PADRÃO de toda transcrição (corrige termos
+            # ouvidos errado SEM resumir, via processar_voz → texto_lapidado).
+            # Só não roda quando a IA foi desligada no toggle (prov=None) ou no modo
+            # vídeo (transcrição crua pro pipeline). Qualquer falha cai no texto cru —
+            # nunca se perde a transcrição.
             ia = None
             if prov:
                 self._set_status(
                     f"Mastigando com {ai_provider.NOMES_AMIGAVEIS.get(prov, prov)}...", TR)
-                ia = ai_provider.processar_voz(texto, lang_detected, prov)
-                if "erro" in ia:
+                try:
+                    ia = ai_provider.processar_voz(texto, lang_detected, prov)
+                except Exception as e_ia:
+                    self._set_status(f"IA falhou ({e_ia}). Salvando só o texto.", AMBER)
+                    ia = None
+                if ia and "erro" in ia:
                     self._set_status(f"IA indisponível ({ia['erro']}). Salvando só o texto.", AMBER)
                     ia = None
 
@@ -1034,30 +1278,34 @@ class Sussurro:
             tem_comando = bool(ia and ia.get("tem_comando"))
 
             if modo["intencao"] == "diario":
-                # Diário/desabafo: NÃO vira comando, NÃO vai pro Claude. Guarda no Privado.
+                # Diário/desabafo: NÃO vira comando, NÃO vai pro Hermes Agent. Guarda no Privado.
                 path = self._save_private(md)
+                self._espelhar(path, texto)
                 destino_msg = f"🔒 Diário salvo (privado): {os.path.basename(path)}."
             elif modo["intencao"] == "jogo":
-                # Rodada do jogo: guarda separada; a Fernanda cola a transcrição pro Claude.
+                # Rodada do jogo: guarda separada; a Fernanda cola a transcrição pro Hermes Agent.
                 path = self._save_jogo(md)
+                self._espelhar(path, texto)
                 destino_msg = (f"🎮 Rodada salva: {os.path.basename(path)}. "
-                               f"Cola a transcrição pro Claude jogar/corrigir.")
+                               f"Cola a transcrição pro Hermes Agent jogar/corrigir.")
             elif modo["intencao"] == "video":
                 # Áudio de vídeo: transcrição crua pro pipeline; o WAV fica em transcricoes/.
                 path = self._save_video(md)
+                self._espelhar(path, texto)
                 destino_msg = (f"🎬 Áudio de vídeo (cru) salvo: {os.path.basename(path)}. "
                                f"WAV em transcricoes/ pro pipeline de edição.")
             else:
-                # 🧠 Pessoal + ⚙️ Ações → Inbox kepano (o Claude organiza / dispara a ação).
+                # 🧠 Pessoal + ⚙️ Ações → Inbox kepano (o Hermes Agent organiza / dispara a ação).
                 path = self._save_inbox(md, "pessoal")
+                self._espelhar(path, texto)
                 destino_msg = (f"{modo['label']} → inbox: {os.path.basename(path)}. "
-                               f"Peça ao Claude pra processar o inbox.")
+                               f"Peça ao Hermes Agent pra processar o inbox.")
 
             ia_text = texto
             if ia:
                 partes = []
                 if ia.get("resumo"):   partes.append(f"📌 {ia['resumo']}")
-                if ia.get("comandos"): partes.append("\n🤖 Comandos pro Claude:\n"
+                if ia.get("comandos"): partes.append("\n🤖 Comandos pro Hermes Agent:\n"
                                                       + "\n".join(f"  • {c}" for c in ia["comandos"]))
                 if ia.get("conexoes"): partes.append("\n🔗 Conexões:\n"
                                                       + "  ".join(f"[[{c}]]" for c in ia["conexoes"]))
@@ -1205,13 +1453,13 @@ class Sussurro:
         )
         if resumo:
             md += f"## Resumo\n\n{resumo}\n\n"
-        md += "## 🤖 Comandos pro Claude\n\n"
+        md += "## 🤖 Comandos pro Hermes Agent\n\n"
         if intencao == "diario":
             md += ("_Diário privado — registro pessoal. NÃO arquivar fora do espaço privado "
                    "e NÃO usar como conteúdo._\n")
         elif intencao == "jogo":
             md += ("_Rodada do jogo de questões (MedCof) — transcrição crua do raciocínio/resposta. "
-                   "O Claude corrige fora do personagem e só registra no caderno de erros se houve erro._\n")
+                   "O Hermes Agent corrige fora do personagem e só registra no caderno de erros se houve erro._\n")
         elif extra_instrucao or comandos:
             if extra_instrucao:
                 md += f"**Ação deste modo:** {extra_instrucao}\n\n"
@@ -1225,9 +1473,9 @@ class Sussurro:
             partes += [f"ARQUIVAR esta nota em `{categoria}`",
                        "SEMPRE adicionar conexões `[[ ]]` ao vault",
                        "marcar `status: processado`"]
-            md += "\n> Ao processar o inbox, o Claude deve: " + "; ".join(partes) + ".\n"
+            md += "\n> Ao processar o inbox, o Hermes Agent deve: " + "; ".join(partes) + ".\n"
         else:
-            md += (f"_Sem comando explícito. O Claude deve ARQUIVAR esta nota em `{categoria}` "
+            md += (f"_Sem comando explícito. O Hermes Agent deve ARQUIVAR esta nota em `{categoria}` "
                    f"e SEMPRE adicionar conexões `[[ ]]`._\n")
         md += f"\n## Conteúdo (transcrição corrigida pelo contexto)\n\n{texto_lap}\n"
         if conexoes:
@@ -1284,12 +1532,39 @@ class Sussurro:
         else:
             md += "_Sem sugestões automáticas._\n"
         md += (
-            "\n---\n\n## Para o Claude resolver\n\n"
-            "> Ao processar o inbox, o Claude deve: (1) resolver/encaminhar cada problema "
+            "\n---\n\n## Para o Hermes Agent resolver\n\n"
+            "> Ao processar o inbox, o Hermes Agent deve: (1) resolver/encaminhar cada problema "
             "acima, (2) refinar as sugestões, (3) mover esta nota para a categoria sugerida "
             "e (4) marcar `status: processado`.\n"
         )
         return md
+
+    def _espelhar(self, md_path, texto=""):
+        """Espelha a captura na pasta da Área de trabalho: áudio (.wav), transcrição
+        limpa (.txt) e o markdown já lapidado pela IA (.md) — os três com o mesmo
+        timestamp, agrupados. Best-effort: nunca derruba o app se der erro."""
+        if not self.cfg.get("espelhar_area_trabalho", True):
+            return
+        try:
+            destino = self.cfg.get("espelho_area_trabalho") or ESPELHO_DEFAULT
+            if not destino:
+                return
+            os.makedirs(destino, exist_ok=True)
+            ts = self.current_ts or os.path.basename(md_path)[:19]
+            # 1) áudio (se a captura veio de gravação; texto colado não tem WAV)
+            wav = self.current_wav
+            if wav and os.path.exists(wav):
+                shutil.copy2(wav, os.path.join(destino, os.path.basename(wav)))
+            # 2) transcrição limpa em texto puro
+            if texto and texto.strip():
+                with open(os.path.join(destino, f"{ts}_transcricao.txt"),
+                          "w", encoding="utf-8") as f:
+                    f.write(texto.strip() + "\n")
+            # 3) markdown processado pela IA
+            if md_path and os.path.exists(md_path):
+                shutil.copy2(md_path, os.path.join(destino, os.path.basename(md_path)))
+        except Exception:
+            pass
 
     def _save_inbox(self, md, vault_id="pessoal"):
         ts    = self.current_ts or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1322,7 +1597,7 @@ class Sussurro:
 
         threading.Thread(target=_run, daemon=True).start()
         self.root.after(0, lambda: self._set_status(
-            "🤖 Captura salva — Claude organizando no vault (fundo)…", TR))
+            "🤖 Captura salva — organizando no vault em segundo plano…", TR))
 
     def _brainstorm_preview(self, ia):
         partes = []
@@ -1434,7 +1709,7 @@ class Sussurro:
     def _show_modos_help(self):
         linhas = ["Cada modo segue o padrão:  falar → a IA transforma → vira ação/arquivo.\n"]
         for m in MODOS:
-            destino = "→ inbox (Claude executa)" if m["inbox"] else "→ arquiva no vault"
+            destino = "→ inbox (Hermes Agent executa)" if m["inbox"] else "→ arquiva no vault"
             linhas.append(f"{m['label']}  {destino}\n   {m['desc']}\n")
         messagebox.showinfo("Usos do Sussurro", "\n".join(linhas))
 
@@ -1462,6 +1737,11 @@ class Sussurro:
         self.file_lbl.configure(text="Nenhuma gravação ainda.")
         self.current_wav = None
         self.tr_btn.configure(state="disabled")
+        self._stop_playback()
+        self._last_audio = None
+        self.play_btn.configure(state="disabled")
+        self.cont_btn.configure(state="disabled")
+        self._draw_waveform()
         self._set_status("Pronta para gravar.")
 
 

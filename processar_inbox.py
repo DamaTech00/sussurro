@@ -23,7 +23,7 @@ from datetime import datetime
 
 HOME        = os.path.expanduser("~")
 VAULT_ROOT  = os.path.join(HOME, "FernandaOS")
-PESSOAL     = os.path.join(VAULT_ROOT, "fernanda-obsidian-main")
+PESSOAL     = os.path.join(VAULT_ROOT, "MySpace")
 LOG_PATH    = os.path.join(PESSOAL, "Inbox", "_auto-processador.log")
 SUSSURRO_DIR = os.path.dirname(os.path.abspath(__file__))
 
