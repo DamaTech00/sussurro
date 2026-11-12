@@ -15,9 +15,26 @@ App de desktop (Python/Tkinter) que **grava áudio, transcreve com [faster-whisp
 - Áudio: `sounddevice`, `soundcard`, `numpy`
 - IA: `ai_provider.py` (Gemini / Anthropic / OpenAI)
 
-## Rodar
+## Instalação por sistema
+
+Baixe o zip do seu sistema na página de **[Releases](https://github.com/DamaTech00/sussurro/releases/latest)** (ou clone o repositório) e use os scripts da pasta `plataformas/`:
+
+| Sistema | Instalar (1ª vez) | Abrir |
+|---|---|---|
+| 🐧 **Linux (Ubuntu/Debian)** | `plataformas/linux/instalar.sh` | menu de aplicativos → *Sussurro*, ou `plataformas/linux/iniciar.sh` |
+| 🪟 **Windows 10/11** | duplo clique em `plataformas\windows\instalar.bat` | atalho *Sussurro* na Área de Trabalho |
+| 🍎 **macOS** | duplo clique em `plataformas/macos/instalar.command` | duplo clique em `plataformas/macos/iniciar.command` |
+
+O instalador cuida das dependências do sistema (Python, Tkinter, PortAudio, ffmpeg), cria o ambiente `.venv` e copia o `config.example.json` para `config.json`.
+
+**Diferenças entre sistemas**
+- **Áudio do PC (loopback):** funciona no Windows (WASAPI) e no Linux (PulseAudio/PipeWire). No macOS o sistema não oferece loopback nativo — instale um driver virtual como o [BlackHole](https://github.com/ExistentialAudio/BlackHole) para gravar o áudio do computador; o microfone funciona normalmente.
+- **macOS:** na primeira gravação, autorize o Terminal em *Ajustes → Privacidade e Segurança → Microfone*.
+- **Auto-processamento com Claude Code** (`auto_processar.sh`, `claude_processar.py`): só Linux/macOS; vem desligado por padrão.
+
+### Manual (qualquer sistema)
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp config.example.json config.json    # ajuste os caminhos
 python sussurro.py
