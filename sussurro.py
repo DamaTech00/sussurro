@@ -13,6 +13,7 @@ except Exception:
     sc = None
 import wave
 import threading
+import time
 import os
 import sys
 import subprocess
@@ -196,7 +197,7 @@ MODOS_POR_LABEL = {m["label"]: m for m in MODOS}
 def modos_do_vault(vault_id):
     return [m for m in MODOS if m["vault"] == vault_id]
 
-FONT  = "Segoe UI"
+FONT  = "Nimbus Sans L"
 
 # ── Tema (claro/escuro). Padrão: escuro. config.json["tema"] sobrescreve. ──
 def _tema_inicial():
@@ -244,6 +245,100 @@ def save_env_key(name, value):
     os.environ[name] = value
 
 
+# ── Dicionário pessoal de correções (NÃO é IA: substituição de texto, offline) ──
+# config.json["correcoes"] = [{"de": "codelitias", "para": "colelitíase"}, ...]
+# Chave opcional: sem ela, nada muda.
+CORRECOES_SEMENTE = [
+    {"de": "codelitias",  "para": "colelitíase"},
+    {"de": "valducruz",   "para": "HAOC"},
+    {"de": "trombolise",  "para": "trombólise"},
+    {"de": "haoc",        "para": "HAOC"},
+    {"de": "hfasp",       "para": "HFASP"},
+    {"de": "uscs",        "para": "USCS"},
+    {"de": "remume",      "para": "REMUME"},
+    {"de": "ankiconnect", "para": "AnkiConnect"},
+]
+
+
+def _ajustar_caixa(original, para):
+    """Respeita a capitalização do trecho original. Se o destino já tem
+    maiúscula (sigla/nome próprio, ex.: HAOC, AnkiConnect), usa como está."""
+    if any(c.isupper() for c in para):
+        return para
+    letras = [c for c in original if c.isalpha()]
+    if len(letras) > 1 and all(c.isupper() for c in letras):
+        return para.upper()
+    if original[:1].isupper():
+        return para[:1].upper() + para[1:]
+    return para
+
+
+def aplicar_correcoes(texto, correcoes):
+    """Troca palavras erradas pelas certas. Case-insensitive, só palavra inteira,
+    preserva o resto da frase. Os termos do usuário passam por re.escape (nunca
+    viram regex). Uma passada só — uma troca não é re-trocada por outra regra."""
+    if not texto or not correcoes:
+        return texto
+    mapa = {}
+    for r in correcoes:
+        try:
+            de = str(r.get("de", "")).strip()
+            para = str(r.get("para", "")).strip()
+        except AttributeError:
+            continue
+        if de and para:
+            mapa.setdefault(de.casefold(), para)
+    if not mapa:
+        return texto
+    # mais longas primeiro: "hospital alemao" vence "hospital"
+    termos = sorted(mapa, key=len, reverse=True)
+    padrao = re.compile(
+        r"(?<!\w)(" + "|".join(re.escape(t) for t in termos) + r")(?!\w)",
+        re.IGNORECASE)
+
+    def _troca(m):
+        orig = m.group(0)
+        para = mapa.get(orig.casefold())
+        return orig if para is None else _ajustar_caixa(orig, para)
+
+    return padrao.sub(_troca, texto)
+
+
+def carregar_correcoes(cfg=None):
+    """Lê as regras do config.json (lista vazia se não houver/der erro)."""
+    try:
+        if cfg is None:
+            cfg = load_config()
+        regras = cfg.get("correcoes") or []
+        return regras if isinstance(regras, list) else []
+    except Exception:
+        return []
+
+
+def regras_para_texto(regras):
+    return "\n".join(f"{r.get('de', '')} = {r.get('para', '')}"
+                     for r in regras if isinstance(r, dict))
+
+
+def texto_para_regras(conteudo):
+    """'errado = certo' por linha. Ignora linhas vazias, '#' e linhas sem '='.
+    Retorna (regras, linhas_ignoradas)."""
+    regras, ruins = [], []
+    for n, linha in enumerate(conteudo.splitlines(), 1):
+        s = linha.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "=" not in s:
+            ruins.append(n)
+            continue
+        de, para = (p.strip() for p in s.split("=", 1))
+        if de and para:
+            regras.append({"de": de, "para": para})
+        else:
+            ruins.append(n)
+    return regras, ruins
+
+
 class Sussurro:
     def __init__(self, root):
         self.root = root
@@ -274,6 +369,7 @@ class Sussurro:
                 pass
 
         self._build_ui()
+        self._model_lock = threading.Lock()
         threading.Thread(target=self._load_model, daemon=True).start()
 
     def _apply_ttk_theme(self):
@@ -393,7 +489,7 @@ class Sussurro:
         self.status_lbl.pack(side="left")
         self.timer_var = tk.StringVar(value="")
         tk.Label(sf, textvariable=self.timer_var,
-                 font=("Courier New", 13, "bold"), fg=REC, bg=BG).pack(side="right")
+                 font=("Nimbus Mono L", 13, "bold"), fg=REC, bg=BG).pack(side="right")
 
         # Botões
         bf = tk.Frame(self.root, bg=BG)
@@ -456,9 +552,10 @@ class Sussurro:
         self.text_raw = self._tab(self.nb, "📝  Transcrição", "raw")
         self.text_ia  = self._tab(self.nb, "✨  Versão IA",   "ia", toolbar=True)
         self.text_md  = self._tab(self.nb, "📄  Notion",      "md",
-                                   font=("Consolas", 10), bg="#1e1e2e",
+                                   font=("Nimbus Mono L", 10), bg="#1e1e2e",
                                    fg="#cdd6f4", toolbar=True)
         self._build_history_tab()
+        self._build_dicionario_tab()
 
         # Rodapé
         ft = tk.Frame(self.root, bg=BG)
@@ -597,6 +694,74 @@ class Sussurro:
 
     # ─── History ─────────────────────────────────────────────────────────────
 
+    def _build_dicionario_tab(self):
+        """Aba 🔤 Dicionário: regras 'errado = certo' editáveis, salvas no config.json."""
+        frame = tk.Frame(self.nb, bg=BG)
+        self.nb.add(frame, text="🔤  Dicionário")
+
+        tk.Label(frame, text="Isto NÃO é IA: é substituição de texto, roda offline e é instantâneo.",
+                 font=(FONT, 10, "bold"), fg=GREEN, bg=BG, anchor="w",
+                 justify="left").pack(fill="x", padx=8, pady=(8, 0))
+        tk.Label(frame, text=("Uma regra por linha, no formato   errado = certo   "
+                              "(ex.: codelitias = colelitíase). Vale para palavra inteira, "
+                              "maiúscula/minúscula tanto faz. Linhas começando com # são ignoradas."),
+                 font=(FONT, 9), fg=TXT2, bg=BG, anchor="w", justify="left",
+                 wraplength=720).pack(fill="x", padx=8, pady=(2, 4))
+
+        btns = tk.Frame(frame, bg=BG)
+        btns.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Button(btns, text="💾 Salvar", font=(FONT, 9, "bold"), bg=GREEN, fg="white",
+                  relief="flat", padx=8, cursor="hand2",
+                  command=self._dic_salvar).pack(side="left")
+        tk.Button(btns, text="🧪 Testar", font=(FONT, 9), bg=CARD, fg=TXT,
+                  relief="flat", padx=8, cursor="hand2",
+                  command=self._dic_testar).pack(side="left", padx=6)
+        self.dic_status = tk.Label(btns, text="", font=(FONT, 9), fg=TXT2, bg=BG, anchor="w")
+        self.dic_status.pack(side="left", padx=6)
+
+        self.dic_text = scrolledtext.ScrolledText(
+            frame, wrap=tk.NONE, font=(FONT, 10), height=8,
+            bg=CARD, fg=TXT, insertbackground=TXT, relief="flat", padx=8, pady=6)
+        self.dic_text.pack(fill="both", expand=True, padx=8)
+        self.dic_text.insert("1.0", regras_para_texto(carregar_correcoes(self.cfg)))
+
+        tk.Label(frame, text="Frase de teste (o 🧪 Testar usa as regras da caixa acima, mesmo sem salvar):",
+                 font=(FONT, 9), fg=TXT2, bg=BG, anchor="w").pack(fill="x", padx=8, pady=(6, 0))
+        self.dic_teste = tk.Text(frame, wrap=tk.WORD, font=(FONT, 10), height=2,
+                                 bg=CARD, fg=TXT, insertbackground=TXT, relief="flat",
+                                 padx=8, pady=4)
+        self.dic_teste.pack(fill="x", padx=8)
+        self.dic_teste.insert("1.0", "o paciente tem codelitias e vai pro valducruz")
+        self.dic_previa = tk.Label(frame, text="", font=(FONT, 10), fg=TXT, bg=BG2,
+                                   anchor="w", justify="left", wraplength=720)
+        self.dic_previa.pack(fill="x", padx=8, pady=(4, 8))
+
+    def _dic_ler_caixa(self):
+        regras, ruins = texto_para_regras(self.dic_text.get("1.0", "end-1c"))
+        aviso = (f"  ⚠ linha(s) ignorada(s) por não ter 'errado = certo': "
+                 f"{', '.join(map(str, ruins))}") if ruins else ""
+        return regras, aviso
+
+    def _dic_testar(self):
+        regras, aviso = self._dic_ler_caixa()
+        frase = self.dic_teste.get("1.0", "end-1c")
+        self.dic_previa.configure(text="→ " + aplicar_correcoes(frase, regras))
+        self.dic_status.configure(text=f"{len(regras)} regra(s) testada(s), ainda não salvas.{aviso}",
+                                  fg=AMBER if aviso else TXT2)
+
+    def _dic_salvar(self):
+        regras, aviso = self._dic_ler_caixa()
+        self.cfg["correcoes"] = regras
+        try:
+            save_config(self.cfg)
+        except Exception as e:
+            self.dic_status.configure(text=f"Erro ao salvar: {e}", fg=REC)
+            return
+        self.dic_text.delete("1.0", tk.END)
+        self.dic_text.insert("1.0", regras_para_texto(regras))
+        self.dic_status.configure(text=f"✅ {len(regras)} regra(s) salva(s).{aviso}",
+                                  fg=AMBER if aviso else GREEN)
+
     def _load_history(self):
         self.hist_list.delete(0, tk.END)
         self._hist_files = []
@@ -679,7 +844,7 @@ class Sussurro:
         t.tag_configure("md_bold", font=(FONT, 10, "bold"))
         t.tag_configure("md_underline", underline=True)
         t.tag_configure("md_quote", foreground=TXT2)
-        t.tag_configure("md_code", font=("Consolas", 10), foreground="#b91c1c")
+        t.tag_configure("md_code", font=("Nimbus Mono L", 10), foreground="#b91c1c")
         t.tag_configure("md_task", foreground=GREEN)
         t.tag_configure("md_hr",  foreground=BORDER)
 
@@ -753,10 +918,29 @@ class Sussurro:
     def _reprocess_hist(self):
         if not self._hist_current:
             return
+        regras = carregar_correcoes(self.cfg)
+        if not self.ia_lapidar_var.get():
+            # Sem IA: aplica só o dicionário pessoal na prévia (fora do cabeçalho
+            # '---' da nota). NÃO grava sozinho — ela confere e clica 💾 Salvar.
+            content = self.hist_view.get("1.0", "end-1c")
+            fm = re.match(r"---\n.*?\n---\n", content, re.DOTALL)
+            cab = fm.group(0) if fm else ""
+            novo = cab + aplicar_correcoes(content[len(cab):], regras)
+            if not regras:
+                self._set_status("Lapidar com IA está desligado e o 🔤 Dicionário está vazio — nada mudou.", AMBER)
+            elif novo == content:
+                self._set_status("🔤 Dicionário aplicado: nenhuma palavra para corrigir nesta nota.", GREEN)
+            else:
+                self.hist_view.delete("1.0", tk.END)
+                self.hist_view.insert("1.0", novo)
+                self._apply_md_highlight(self.hist_view)
+                self._set_status("🔤 Dicionário aplicado na prévia (sem IA). Confira e clique 💾 Salvar para gravar.", GREEN)
+            return
         content = self.hist_view.get("1.0", tk.END)
         # Extrai a transcrição bruta entre os marcadores
         m = re.search(r'## 📝 Transcrição Original\n\n(.+?)(?:\n---|\Z)', content, re.DOTALL)
         texto = m.group(1).strip() if m else content.strip()
+        texto = aplicar_correcoes(texto, regras)
         provedor = IDIOMAS.get(self.lang_var.get())
         prov = self._prov_code()
         self._set_status("Re-processando com IA...", TR)
@@ -829,10 +1013,24 @@ class Sussurro:
     def _load_model(self):
         try:
             size = self.cfg.get("modelo_whisper", "base")
-            self.model = WhisperModel(size, device="cpu", compute_type="int8")
-            self._set_status("Pronta! Selecione o idioma e clique Gravar.", GREEN)
+            self.dispositivo = "GPU"
+            try:   # GPU (NVIDIA) se houver: bem mais rápido, deixa a prévia ao vivo fluida
+                self.model = WhisperModel(size, device="cuda", compute_type="int8_float16")
+            except Exception as e_gpu:
+                # O recuo para CPU não pode ser silencioso: fica no log e aparece no estado.
+                self.dispositivo = "CPU"
+                self._log_gpu(f"CUDA falhou com '{size}': {type(e_gpu).__name__}: {e_gpu}")
+                self.model = WhisperModel(size, device="cpu", compute_type="int8")
+            self._set_status(f"Pronta! Whisper '{size}' na {self.dispositivo}. Selecione o idioma e clique Gravar.", GREEN)
         except Exception as e:
             self._set_status(f"Erro ao carregar modelo: {e}", REC)
+
+    def _log_gpu(self, msg):
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sussurro_gpu.log"), "a") as f:
+                f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+        except Exception:
+            pass
 
     # ─── Gravação ────────────────────────────────────────────────────────────
 
@@ -909,6 +1107,105 @@ class Sussurro:
         msg = "🔴  Gravando (" + " + ".join(fontes) + ")... clique PARAR quando terminar."
         self._set_status((warn + msg) if warn else msg, AMBER if warn else REC)
         self._tick_timer()
+        self._start_live(append)
+
+    # ─── Transcrição ao vivo (prévia enquanto grava) ─────────────────────────
+
+    LIVE_INTERVALO_S = 2.0    # a cada quanto tempo atualiza a prévia
+    LIVE_JANELA_S    = 12.0   # acima disso, "congela" o texto já estável e avança
+
+    def _start_live(self, append):
+        """Liga a prévia ao vivo: texto confirmado (normal) + trecho provisório (cinza)."""
+        if not append or not hasattr(self, "_live_commit_s"):
+            self._live_commit_s = 0      # amostra (48 kHz) até onde o texto está confirmado
+            self._live_texto = ""
+            self.text_raw.delete("1.0", tk.END)
+        self.text_raw.tag_configure("live_prov", foreground=TXT2)
+        self.nb.select(0)
+        self._live_pendente = None
+        self._live_thread = threading.Thread(target=self._live_loop, daemon=True)
+        self._live_thread.start()
+        self._live_poll()
+
+    def _live_poll(self):
+        """Roda na thread da interface: pega o último texto da prévia e mostra."""
+        pend, self._live_pendente = self._live_pendente, None
+        if pend is not None and self.recording:
+            self._live_render(*pend)
+        if self.recording:
+            self.root.after(500, self._live_poll)
+
+    def _live_tail(self, inicio):
+        """Áudio gravado a partir da amostra `inicio`, mono 16 kHz (só a cauda)."""
+        if getattr(self, "_cap_mic", False):
+            chunks = list(self.audio_mic)
+            sr = SAMPLE_RATE
+        else:
+            chunks = list(self.audio_media)
+            sr = getattr(self, "_media_sr", SAMPLE_RATE)
+        total = sum(len(c) for c in chunks)
+        if total <= inicio:
+            return None, total
+        partes, pos = [], total
+        for c in reversed(chunks):
+            partes.append(c)
+            pos -= len(c)
+            if pos <= inicio:
+                break
+        a = np.concatenate(partes[::-1], axis=0).astype(np.float32)
+        if a.ndim > 1:
+            a = a.mean(axis=1)
+        a = a.reshape(-1)[inicio - pos:]
+        return self._resample(a, sr, 16000), total
+
+    def _live_loop(self):
+        lang_code = IDIOMAS.get(self.lang_var.get())
+        while self.recording:
+            time.sleep(self.LIVE_INTERVALO_S)
+            if not self.recording:
+                break
+            try:
+                audio, total = self._live_tail(self._live_commit_s)
+                if audio is None or len(audio) < 16000:   # < 1 s: espera mais
+                    continue
+                dur = len(audio) / 16000.0
+                with self._model_lock:
+                    segs, _ = self.model.transcribe(
+                        audio, language=lang_code, beam_size=1, vad_filter=True,
+                        initial_prompt=(self._live_texto[-200:] or GLOSSARIO_WHISPER),
+                        condition_on_previous_text=False)
+                    segs = list(segs)
+                confirmar = []
+                if dur > self.LIVE_JANELA_S:
+                    # congela os segmentos que terminaram bem antes do fim da janela
+                    confirmar = [s for s in segs if s.end < dur - 2.0]
+                if confirmar:
+                    fim = confirmar[-1].end
+                    novo = " ".join(s.text.strip() for s in confirmar).strip()
+                    self._live_texto = (self._live_texto + " " + novo).strip()
+                    sr_fonte = (SAMPLE_RATE if getattr(self, "_cap_mic", False)
+                                else getattr(self, "_media_sr", SAMPLE_RATE))
+                    self._live_commit_s += int(fim * sr_fonte)
+                    prov = " ".join(s.text.strip() for s in segs[len(confirmar):]).strip()
+                else:
+                    prov = " ".join(s.text.strip() for s in segs).strip()
+                self._live_pendente = (self._live_texto, prov)
+            except Exception as e:
+                self._set_status(f"⚠ Prévia ao vivo falhou: {e}", AMBER)
+                time.sleep(2)
+
+    def _live_render(self, confirmado, provisorio):
+        t = self.text_raw
+        t.delete("1.0", tk.END)
+        # Dicionário pessoal só na EXIBIÇÃO (o _live_texto cru segue como contexto do Whisper).
+        regras = carregar_correcoes(self.cfg)
+        confirmado = aplicar_correcoes(confirmado, regras)
+        provisorio = aplicar_correcoes(provisorio, regras)
+        if confirmado:
+            t.insert(tk.END, confirmado + " ")
+        if provisorio:
+            t.insert(tk.END, provisorio, "live_prov")
+        t.see(tk.END)
 
     def _record_media_loop(self):
         """Captura contínua do áudio do PC (loopback) numa thread, até parar."""
@@ -1098,6 +1395,12 @@ class Sussurro:
             self._set_status("Cole ou digite um texto na aba '📝 Transcrição' primeiro.", AMBER)
             self.nb.select(0)
             return
+        # Dicionário pessoal (sem IA): corrige e mostra na aba o texto que será salvo.
+        corrigido = aplicar_correcoes(texto, carregar_correcoes(self.cfg))
+        if corrigido != texto:
+            texto = corrigido
+            self.text_raw.delete("1.0", tk.END)
+            self.text_raw.insert("1.0", texto)
         for t in [self.text_ia, self.text_md]:
             t.delete("1.0", tk.END)
         self.current_ts  = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1187,6 +1490,10 @@ class Sussurro:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def _run_transcription(self):
+        with self._model_lock:
+            self._run_transcription_locked()
+
+    def _run_transcription_locked(self):
         try:
             lang_code = IDIOMAS.get(self.lang_var.get())
             dur = self._audio_duracao_s(self.current_wav)
@@ -1205,6 +1512,8 @@ class Sussurro:
                 texto = " ".join(s.text.strip() for s in segments).strip()
                 lang_detected = lang_code or info.language
                 duracao = info.duration
+            # Dicionário pessoal (substituição de texto, sem IA) antes de montar a nota.
+            texto = aplicar_correcoes(texto, carregar_correcoes(self.cfg))
             self.root.after(0, lambda: self.text_raw.insert("1.0", texto))
         except Exception as e:
             self._set_status(f"Erro na transcrição: {e}", REC)
@@ -1653,6 +1962,18 @@ class Sussurro:
         tk.Checkbutton(row, variable=ia_var, bg=BG, activebackground=BG,
                        selectcolor=BG2).pack(side="left")
 
+        # Processamento das capturas pelo Claude Code headless (roda na assinatura da Fê).
+        auto_var = tk.BooleanVar(value=self.cfg.get("auto_processar", False))
+        row = tk.Frame(win, bg=BG)
+        row.pack(fill="x", padx=20, pady=5)
+        tk.Label(row, text="🤖 Processar capturas (Claude Code):", font=(FONT, 10),
+                 fg=TXT, bg=BG, width=30, anchor="w").pack(side="left")
+        tk.Checkbutton(row, variable=auto_var, bg=BG, activebackground=BG,
+                       selectcolor=BG2).pack(side="left")
+        tk.Label(win, text="↳ ligado: cada captura salva é organizada no cofre "
+                           "em segundo plano (leva ~30-60s; log em Inbox/_auto-processador.log)",
+                 font=(FONT, 8), fg=TXT2, bg=BG).pack(pady=(0, 6))
+
         tema_var = tk.StringVar(value=self.cfg.get("tema", "escuro"))
         row = tk.Frame(win, bg=BG)
         row.pack(fill="x", padx=20, pady=5)
@@ -1676,6 +1997,7 @@ class Sussurro:
                     os.makedirs(val, exist_ok=True) if val else None
             self.cfg["usar_ia_para_lapidacao"] = ia_var.get()
             self.ia_lapidar_var.set(ia_var.get())   # mantém o toggle da barra em sincronia
+            self.cfg["auto_processar"] = auto_var.get()
             self.cfg["tema"] = tema_var.get()
             save_config(self.cfg)
             self._refresh_providers()

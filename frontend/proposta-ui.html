@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sussurro — proposta de nova interface</title>
+<style>
+  :root{
+    --bg:#15151f; --surface:#1e1e2e; --surface2:#27293d; --border:#34344e;
+    --txt:#e8e8ee; --txt2:#9d9db0; --accent:#818cf8; --accent2:#6d76f0;
+    --rec:#ef4444; --ok:#10b981; --amber:#f59e0b;
+    --r:14px; --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:"Ubuntu","Inter","Noto Sans",system-ui,-apple-system,sans-serif;
+    background:var(--bg); color:var(--txt); padding:28px 20px 60px;
+    -webkit-font-smoothing:antialiased; line-height:1.45;
+  }
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:20px;font-weight:600;letter-spacing:-.01em}
+  .sub{color:var(--txt2);font-size:13px;margin:6px 0 26px}
+  .label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--txt2);font-weight:600;margin:0 0 10px}
+
+  /* ---------- janela ---------- */
+  .app{background:var(--surface);border:1px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:var(--shadow)}
+  .titlebar{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#191927;border-bottom:1px solid var(--border)}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .title{margin-left:6px;font-size:13px;font-weight:600}
+  .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
+        padding:5px 11px;border-radius:999px;background:rgba(16,185,129,.12);color:var(--ok);
+        border:1px solid rgba(16,185,129,.28)}
+  .pill.off{background:rgba(245,158,11,.12);color:var(--amber);border-color:rgba(245,158,11,.3)}
+  .pill svg{width:12px;height:12px}
+
+  /* ---------- palco ---------- */
+  .stage{padding:34px 26px 26px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:18px;
+         background:radial-gradient(120% 90% at 50% -20%, rgba(129,140,248,.10), transparent 60%)}
+  .timer{font-size:46px;font-weight:300;font-variant-numeric:tabular-nums;letter-spacing:.02em;line-height:1}
+  .timer.idle{color:var(--txt2);font-size:15px;font-weight:500;letter-spacing:0}
+  .recwrap{position:relative;display:grid;place-items:center}
+  .ring{position:absolute;width:104px;height:104px;border-radius:50%;border:2px solid rgba(239,68,68,.5);animation:pulse 1.8s ease-out infinite}
+  @keyframes pulse{0%{transform:scale(.85);opacity:.9}100%{transform:scale(1.5);opacity:0}}
+  .rec{width:88px;height:88px;border-radius:50%;border:none;cursor:pointer;background:var(--rec);color:#fff;
+       display:grid;place-items:center;box-shadow:0 8px 26px rgba(239,68,68,.35);transition:transform .15s}
+  .rec:hover{transform:scale(1.04)}
+  .rec svg{width:30px;height:30px}
+  .rec2{width:88px;height:88px;border-radius:50%;border:1px solid var(--border);cursor:pointer;
+        background:var(--surface2);color:var(--accent);display:grid;place-items:center}
+  .rec2 svg{width:26px;height:26px}
+  .hint{font-size:12.5px;color:var(--txt2);max-width:420px}
+
+  /* onda */
+  .wave{display:flex;align-items:center;justify-content:center;gap:3px;height:52px;width:100%;max-width:520px}
+  .wave i{display:block;width:3px;border-radius:2px;background:linear-gradient(180deg,var(--accent),#4f46e5);height:6px}
+  .wave.live i{animation:bar 1s ease-in-out infinite;background:linear-gradient(180deg,#f87171,var(--rec))}
+  .wave i:nth-child(3n){animation-delay:.15s}.wave i:nth-child(4n){animation-delay:.32s}
+  .wave i:nth-child(5n){animation-delay:.47s}.wave i:nth-child(2n){animation-delay:.62s}
+  @keyframes bar{0%,100%{height:6px}50%{height:40px}}
+
+  /* chips */
+  .chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  .chip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:500;padding:7px 13px;border-radius:999px;
+        background:var(--surface2);border:1px solid var(--border);color:var(--txt2);cursor:pointer}
+  .chip.on{background:rgba(129,140,248,.14);border-color:rgba(129,140,248,.4);color:#c7cbff}
+  .chip svg{width:13px;height:13px}
+
+  /* ---------- corpo ---------- */
+  .body{padding:0 22px 22px;display:grid;grid-template-columns:1fr 300px;gap:18px;align-items:start}
+  .card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+  .card-h{display:flex;align-items:center;gap:9px;padding:13px 16px;border-bottom:1px solid var(--border)}
+  .card-h b{font-size:13.5px;font-weight:600}
+  .card-b{padding:16px;font-size:14px;color:var(--txt);line-height:1.65}
+  .card-b .meta{color:var(--txt2);font-size:12px;margin-bottom:10px}
+  .hl{background:rgba(129,140,248,.18);border-radius:4px;padding:0 3px}
+  .fix{background:rgba(16,185,129,.15);border-radius:4px;padding:0 3px;border-bottom:1px dashed var(--ok)}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 16px}
+  .btn{font-family:inherit;font-size:12.5px;font-weight:600;padding:9px 14px;border-radius:10px;border:1px solid var(--border);
+       background:var(--surface);color:var(--txt);cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#14142a}
+  .btn.ghost{background:transparent;color:var(--txt2)}
+  .btn svg{width:14px;height:14px}
+
+  /* histórico */
+  .hist{padding:8px}
+  .item{padding:10px 11px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+  .item:hover{background:var(--surface);border-color:var(--border)}
+  .item.on{background:rgba(129,140,248,.12);border-color:rgba(129,140,248,.35)}
+  .item .t{font-size:12.5px;font-weight:600;margin-bottom:3px}
+  .item .d{font-size:11.5px;color:var(--txt2);display:flex;gap:8px}
+  .search{width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);
+          color:var(--txt);font-family:inherit;font-size:12.5px;margin-bottom:6px}
+
+  /* fluxo */
+  .flow{display:flex;gap:0;margin:26px 0 10px;align-items:center;justify-content:center;flex-wrap:wrap}
+  .step{font-size:12px;font-weight:600;color:var(--txt2);padding:7px 14px;border-radius:999px;border:1px solid var(--border);margin:4px}
+  .step.now{background:var(--accent);color:#14142a;border-color:var(--accent)}
+  .step.done{color:var(--ok);border-color:rgba(16,185,129,.35)}
+  .arrow{color:var(--border);font-size:14px;margin:0 2px}
+  .note{max-width:1060px;margin:34px auto 0;font-size:12.5px;color:var(--txt2);border-left:2px solid var(--border);padding-left:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sussurro · proposta de interface</h1>
+  <div class="sub">Modelo visual para decidir o rumo — abra no navegador. Fonte: Ubuntu (já instalada na máquina).</div>
+
+  <div class="app">
+    <div class="titlebar">
+      <span class="dot" style="background:#ef4444"></span>
+      <span class="dot" style="background:#f59e0b"></span>
+      <span class="dot" style="background:#10b981"></span>
+      <span class="title">Sussurro</span>
+      <div class="spacer"></div>
+      <span class="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg> large-v3-turbo · GPU</span>
+      <span class="pill off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="4"/></svg> IA desligada</span>
+      <span class="chip" style="padding:5px 11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg> Ajustes</span>
+    </div>
+
+    <div class="stage">
+      <div class="timer">04:12</div>
+      <div class="recwrap">
+        <div class="ring"></div>
+        <button class="rec" title="Parar"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+      </div>
+      <div class="wave live">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="chips">
+        <span class="chip on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg> Microfone</span>
+        <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H3v6h3l5 4zM17 9a4 4 0 0 1 0 6"/></svg> Áudio do PC</span>
+        <span class="chip on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h7"/></svg> Destino: Inbox</span>
+        <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Marcar ponto</span>
+      </div>
+      <div class="hint">Gravando · fale normal. Ao parar, a transcrição aparece aqui embaixo — e já vem salva na sua nota do Obsidian.</div>
+    </div>
+
+    <div class="body">
+      <div>
+        <div class="card">
+          <div class="card-h"><b>Transcrição</b><div class="spacer"></div><span class="pill" style="background:rgba(16,185,129,.12)">0,8 s de silêncio cortado</span></div>
+          <div class="card-b">
+            <div class="meta">04:12 · 612 palavras · português · 2 marcadores</div>
+            Seguinte, isso aqui vai ser uma nota provavelmente pra algum lugar, eu não sei pra onde que ele vai,
+            mas a ideia é <span class="hl">registrar a conduta do paciente com <span class="fix">colelitíase</span></span>
+            e o encaminhamento pro <span class="fix">HAOC</span>. <span class="hl">Marcador 02:18</span>
+            Depois eu quero lembrar de perguntar sobre o <span class="fix">PALS</span> dela.
+          </div>
+          <div class="actions">
+            <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> Salvar no cofre</button>
+            <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5h10"/></svg> Copiar</button>
+            <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg> .docx</button>
+            <button class="btn ghost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg> Enviar pro Anki</button>
+          </div>
+        </div>
+        <div class="note">
+          Verde pontilhado = <b>dicionário pessoal</b> corrigiu sozinho (sem IA): colelitíase, HAOC, PALS.
+          Você alimenta a lista uma vez e esses erros nunca mais voltam.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><b>Histórico</b></div>
+        <div class="hist">
+          <input class="search" placeholder="Buscar nas 184 transcrições…">
+          <div class="item on"><div class="t">Conduta · colelitíase</div><div class="d"><span>hoje 14:12</span><span>04:12</span></div></div>
+          <div class="item"><div class="t">Aula PALS — ritmos</div><div class="d"><span>ontem 19:40</span><span>38:02</span></div></div>
+          <div class="item"><div class="t">Ideia carrossel: ferro IV</div><div class="d"><span>28/10</span><span>01:15</span></div></div>
+          <div class="item"><div class="t">Diário · terça</div><div class="d"><span>27/10</span><span>06:31</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow">
+    <span class="step done">Ocioso</span><span class="arrow">→</span>
+    <span class="step now">Gravando</span><span class="arrow">→</span>
+    <span class="step">Revisar</span><span class="arrow">→</span>
+    <span class="step">Transcrevendo</span><span class="arrow">→</span>
+    <span class="step">Salvo na nota</span>
+  </div>
+  <div class="note">
+    A ideia central: hoje existem três botões coloridos de peso igual (GRAVAR / TRANSCREVER / PROCESSAR TEXTO) e cada um pede uma explicação em letra miúda.
+    Na proposta, o app conhece o <b>estado</b> em que está e mostra <b>uma</b> ação por vez — os botões mudam conforme o fluxo, e o texto de ajuda desaparece.
+  </div>
+</div>
+</body>
+</html>

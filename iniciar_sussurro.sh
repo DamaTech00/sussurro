@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$(readlink -f "$0")")"
 
-VENV="$HOME/.venvs/sussurro"
+VENV="$HOME/sussurro/.venv"
 PY="$VENV/bin/python"
 
 if [ ! -x "$PY" ]; then

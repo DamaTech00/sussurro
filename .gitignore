@@ -21,3 +21,15 @@ __pycache__/
 .drive_sync.log
 .drive_sync_state.tsv
 *.bak-*
+
+# Dados pessoais / logs locais
+briefings/
+claude_logs/
+tarefas/
+
+# Backups e venvs antigos
+.venv*/
+.venv.*
+*.bak
+*.bak_*
+config.json.*
